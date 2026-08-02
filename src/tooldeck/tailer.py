@@ -35,6 +35,10 @@ class LogTailer:
 
     @staticmethod
     def _fold(line: str) -> str:
+        # Windows text files use CRLF; the CR is a line ending here, not a
+        # carriage-return progress update to fold away.
+        if line.endswith("\r"):
+            line = line[:-1]
         return line.rsplit("\r", 1)[-1]
 
     def read(self) -> str:

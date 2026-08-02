@@ -159,7 +159,9 @@ class ProcManager:
         use_windows = os.name == "nt" if windows is None else windows
         executable = Path(shell).name.casefold()
         if use_windows and executable in {"cmd", "cmd.exe", "command.com"}:
-            return [shell, "/d", "/s", "/c", command]
+            # The outer quotes preserve an executable path quoted inside the command
+            # when cmd.exe applies its /S /C quote-stripping rules.
+            return [shell, "/d", "/s", "/c", f'"{command}"']
         if use_windows and executable in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
             return [shell, "-NoLogo", "-NoProfile", "-Command", command]
         return [shell, "-c", command]

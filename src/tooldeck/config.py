@@ -62,7 +62,7 @@ class ToolConfig:
 
         name = required_text("name")
         cmd = required_text("cmd")
-        cwd = os.path.expanduser(required_text("cwd"))
+        cwd = str(Path(required_text("cwd")).expanduser())
 
         group = raw.get("group", "")
         if not isinstance(group, str):

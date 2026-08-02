@@ -281,7 +281,7 @@ def test_windows_shell_argv_and_taskkill_command(monkeypatch):
         "/d",
         "/s",
         "/c",
-        "echo ready",
+        '"echo ready"',
     ]
     assert ProcManager._shell_argv("powershell.exe", "Get-Date", windows=True) == [
         "powershell.exe",

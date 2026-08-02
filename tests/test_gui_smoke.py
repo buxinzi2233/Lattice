@@ -55,12 +55,14 @@ def build_bridge(manager: FixedManager | None = None) -> AppBridge:
 
 def test_lattice_icon_asset_loads(qapp):
     path = icon_path()
-    assert path.name == "lattice-mark.svg"
+    expected_name = "lattice.ico" if sys.platform == "win32" else "lattice-mark.svg"
+    assert path.name == expected_name
     assert path.is_file()
     assert not QIcon(str(path)).isNull()
-    source = path.read_text(encoding="utf-8")
-    assert "<rect" not in source
-    assert "rx=" not in source
+    if path.suffix == ".svg":
+        source = path.read_text(encoding="utf-8")
+        assert "<rect" not in source
+        assert "rx=" not in source
 
 
 def test_tool_model_lists_searches_and_filters(qapp):
@@ -467,7 +469,8 @@ def test_qml_engine_loads_new_workspace_without_warnings(qapp):
     QTest.keyClick(root, Qt.Key.Key_K, Qt.KeyboardModifier.ControlModifier)
     qapp.processEvents()
     assert search.property("activeFocus") is True
-    assert messages == []
+    unexpected_messages = [message for message in messages if "QFontDatabase: Cannot find font directory" not in message]
+    assert unexpected_messages == []
 
     root.hide()
     shiboken6.delete(root)
