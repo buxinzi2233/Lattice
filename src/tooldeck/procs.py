@@ -159,12 +159,26 @@ class ProcManager:
         use_windows = os.name == "nt" if windows is None else windows
         executable = Path(shell).name.casefold()
         if use_windows and executable in {"cmd", "cmd.exe", "command.com"}:
-            # The outer quotes preserve an executable path quoted inside the command
-            # while leaving cmd.exe's default /C parsing in charge of the script.
-            return [shell, "/d", "/c", f'"{command}"']
+            return [shell, "/d", "/c", command]
         if use_windows and executable in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
             return [shell, "-NoLogo", "-NoProfile", "-Command", command]
         return [shell, "-c", command]
+
+    @classmethod
+    def _launch_spec(
+        cls,
+        shell: str,
+        command: str,
+        *,
+        windows: bool | None = None,
+    ) -> tuple[str | list[str], dict[str, Any]]:
+        use_windows = os.name == "nt" if windows is None else windows
+        executable = Path(shell).name.casefold()
+        if use_windows and executable in {"cmd", "cmd.exe", "command.com"}:
+            # subprocess builds cmd.exe's /C wrapper itself. Passing an argv
+            # list here would apply C-runtime quoting rules that cmd does not use.
+            return command, {"shell": True, "executable": shell}
+        return cls._shell_argv(shell, command, windows=use_windows), {}
 
     @staticmethod
     def _taskkill_tree(pid: int, *, force: bool) -> bool:
@@ -319,8 +333,10 @@ class ProcManager:
                         }
                     else:
                         platform_options = {"start_new_session": True}
+                    launch_args, launch_options = self._launch_spec(shell, tool.cmd)
+                    platform_options.update(launch_options)
                     child = subprocess.Popen(
-                        self._shell_argv(shell, tool.cmd),
+                        launch_args,
                         cwd=cwd,
                         env={**os.environ, **tool.env},
                         stdin=subprocess.DEVNULL,

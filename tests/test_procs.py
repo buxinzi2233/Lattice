@@ -280,8 +280,12 @@ def test_windows_shell_argv_and_taskkill_command(monkeypatch):
         "cmd.exe",
         "/d",
         "/c",
-        '"echo ready"',
+        "echo ready",
     ]
+    assert ProcManager._launch_spec("cmd.exe", '"C:\\Python312\\python.exe" -V', windows=True) == (
+        '"C:\\Python312\\python.exe" -V',
+        {"shell": True, "executable": "cmd.exe"},
+    )
     assert ProcManager._shell_argv("powershell.exe", "Get-Date", windows=True) == [
         "powershell.exe",
         "-NoLogo",
