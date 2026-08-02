@@ -46,9 +46,13 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Verify Windows installer and shortcut
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\verify_windows_install.ps1
       - run: uv sync --frozen --extra dev --extra build
       - run: uv run python -m build
       - run: powershell -ExecutionPolicy Bypass -File packaging\build_portable_windows.ps1
+      - name: Smoke test portable executable
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\smoke_portable_windows.ps1
       - uses: actions/upload-artifact@v4
         with:
           name: lattice-windows-portable

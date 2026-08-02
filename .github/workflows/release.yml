@@ -43,6 +43,8 @@ jobs:
           python-version: "3.12"
       - run: uv sync --frozen --extra dev --extra build
       - run: powershell -ExecutionPolicy Bypass -File packaging\build_portable_windows.ps1
+      - name: Smoke test portable executable
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File packaging\smoke_portable_windows.ps1
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
