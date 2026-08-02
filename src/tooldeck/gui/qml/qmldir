@@ -1,0 +1,2 @@
+module ToolDeckUI
+singleton Theme 1.0 Theme.qml

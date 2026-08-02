@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tooldeck"
+version = "0.2.0"
+description = "Lattice 晶格中枢 — 本地工具统一启动、停止与日志查看"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = ["PySide6-Essentials>=6.6"]
+classifiers = [
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.12",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+build = ["build>=1.2", "nuitka>=2.4", "setuptools>=68"]
+
+[project.scripts]
+tooldeck = "tooldeck.cli:main"
+tooldeck-gui = "tooldeck.gui.app:run_gui"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"tooldeck.gui" = [
+    "assets/*.svg",
+    "assets/*.ico",
+    "assets/*.json",
+    "assets/fonts/*.ttf",
+    "assets/fonts/licenses/*.txt",
+    "qml/*.qml",
+    "qml/qmldir",
+    "qml/components/*.qml",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

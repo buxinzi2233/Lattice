@@ -1,0 +1,13 @@
+name = "Anima LoRA WebUI"
+group = "模型训练"
+cmd = "./start_webui.sh"
+cwd = "~/Projects/anima_lora_webui"
+shell = "/bin/bash"
+autostart = false
+stop_signal = "TERM"
+stop_timeout = 20
+
+[env]
+ANIMA_WEB_HOST = "127.0.0.1"
+ANIMA_WEB_PORT = "20103"
+# CUDA_HOME = "~/cuda-12.9" # 按本机 CUDA 工具链修改。

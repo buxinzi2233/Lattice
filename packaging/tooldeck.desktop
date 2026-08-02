@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Lattice 晶格中枢
+Comment=统一启动、停止本地工具并查看后台日志
+Exec=tooldeck-gui
+TryExec=tooldeck-gui
+Icon=lattice
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=tooldeck
+X-GNOME-UsesNotifications=true

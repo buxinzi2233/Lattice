@@ -1,0 +1,10 @@
+# 此脚本会在启动后尝试打开 http://127.0.0.1:8000。
+# 端口 8000 可能与 vLLM 冲突。
+name = "MonadForge WebUI"
+group = "模型训练"
+cmd = "bash ./start-webui-linux.sh"
+cwd = "~/Projects/MonadForge"
+shell = "/bin/bash"
+autostart = false
+stop_signal = "TERM"
+stop_timeout = 15

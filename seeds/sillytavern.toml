@@ -1,0 +1,12 @@
+# 直接 npm start，不调用会先执行 npm install 的 start.sh。
+name = "SillyTavern"
+group = "交互服务"
+cmd = "npm start"
+cwd = "~/Projects/SillyTavern"
+shell = "/usr/bin/fish"
+autostart = false
+stop_signal = "TERM"
+stop_timeout = 15
+
+[env]
+NODE_ENV = "production"

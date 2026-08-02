@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "notice": "Unofficial Lattice content index. Current boot lines are Lattice originals, not game quotes. Official quotes remain excluded until line-by-line verification.",
+  "entries": [
+    {
+      "id": "silence",
+      "character": "Silence",
+      "faction": "莱茵生命",
+      "quote_zh": "本地记录已同步。请确认实验环境。",
+      "quote_en": "Local records synchronized. Confirm the lab environment.",
+      "source_url": "https://www.arknights.global/",
+      "official_page": "https://www.arknights.global/",
+      "image_url": "",
+      "image_sha256": "",
+      "copyright": "(c) Hypergryph / Yostar",
+      "text_type": "lattice_original_boot_line",
+      "verified": true
+    },
+    {
+      "id": "saria",
+      "character": "Saria",
+      "faction": "莱茵生命",
+      "quote_zh": "安全协议接入，进程树处于可观测状态。",
+      "quote_en": "Safety protocol linked. Process trees are observable.",
+      "source_url": "https://www.arknights.global/",
+      "official_page": "https://www.arknights.global/",
+      "image_url": "",
+      "image_sha256": "",
+      "copyright": "(c) Hypergryph / Yostar",
+      "text_type": "lattice_original_boot_line",
+      "verified": true
+    },
+    {
+      "id": "ifrit",
+      "character": "Ifrit",
+      "faction": "莱茵生命",
+      "quote_zh": "能源读数稳定，启动序列继续。",
+      "quote_en": "Power readings stable. Bootstrap sequence continues.",
+      "source_url": "https://www.arknights.global/",
+      "official_page": "https://www.arknights.global/",
+      "image_url": "",
+      "image_sha256": "",
+      "copyright": "(c) Hypergryph / Yostar",
+      "text_type": "lattice_original_boot_line",
+      "verified": true
+    }
+  ]
+}

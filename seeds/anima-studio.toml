@@ -1,0 +1,9 @@
+# 后端默认使用 8765；不要与占用同一端口的训练 daemon 同时启动。
+name = "Anima LoRA Studio"
+group = "模型训练"
+cmd = "./studio.sh run --no-browser"
+cwd = "~/Projects/AnimaLoraStudio"
+shell = "/bin/bash"
+autostart = false
+stop_signal = "TERM"
+stop_timeout = 20

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.31"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install
+        run: uv sync --frozen --extra dev
+      - name: Test
+        run: uv run pytest -q
+      - name: QML lint
+        if: runner.os == 'Linux'
+        run: uv run pyside6-qmllint src/tooldeck/gui/qml/Main.qml src/tooldeck/gui/qml/components/*.qml
+
+  windows-portable:
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          version: "0.5.31"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen --extra dev --extra build
+      - run: uv run python -m build
+      - run: powershell -ExecutionPolicy Bypass -File packaging\build_portable_windows.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lattice-windows-portable
+          path: |
+            dist/Lattice-0.2.0-windows-portable.zip
+            dist/SHA256SUMS-windows.txt

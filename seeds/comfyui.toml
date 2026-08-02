@@ -1,0 +1,13 @@
+# ComfyUI / V100 16 GB；默认 lowvram，监听 0.0.0.0:8188。
+name = "ComfyUI"
+group = "图像生成"
+cmd = "exec ./start-comfyui.fish 8188"
+cwd = "~/Projects/ComfyUI"
+shell = "/usr/bin/fish"
+autostart = false
+stop_signal = "TERM"
+stop_timeout = 20
+
+[env]
+PYTORCH_ALLOC_CONF = "expandable_segments:True"
+# CUDA_HOME = "~/cuda-12.9" # 按本机 CUDA 工具链修改。

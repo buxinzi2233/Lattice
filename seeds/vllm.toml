@@ -1,0 +1,17 @@
+# 启动前把下面命令中的 CHANGE-ME 改成实际模型目录。
+# 默认端口 8000 会与 MonadForge WebUI 冲突，不要同时使用同一端口。
+name = "vLLM"
+group = "模型推理"
+cmd = '''
+set MODEL_PATH "$HOME/models/CHANGE-ME"
+if not test -d "$MODEL_PATH"
+    echo "Lattice: 请先编辑 vLLM 配置并填写实际模型目录：$MODEL_PATH"
+    exit 2
+end
+fish ./start-vllm.fish "$MODEL_PATH" 8000 32768
+'''
+cwd = "~/Projects/llm-inference"
+shell = "/usr/bin/fish"
+autostart = false
+stop_signal = "TERM"
+stop_timeout = 30
