@@ -206,7 +206,7 @@ def test_bridge_tool_editor_round_trip(qapp):
         "id": "demo",
         "name": "演示",
         "group": "模型训练",
-        "cwd": "/tmp",
+        "cwd": str(Path("/tmp")),
         "cmd": "echo hello\nsleep 1",
         "shell": "/usr/bin/fish",
         "envText": "PORT=1234",

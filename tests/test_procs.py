@@ -279,7 +279,6 @@ def test_windows_shell_argv_and_taskkill_command(monkeypatch):
     assert ProcManager._shell_argv("cmd.exe", "echo ready", windows=True) == [
         "cmd.exe",
         "/d",
-        "/s",
         "/c",
         '"echo ready"',
     ]

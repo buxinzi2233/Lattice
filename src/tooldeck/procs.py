@@ -160,8 +160,8 @@ class ProcManager:
         executable = Path(shell).name.casefold()
         if use_windows and executable in {"cmd", "cmd.exe", "command.com"}:
             # The outer quotes preserve an executable path quoted inside the command
-            # when cmd.exe applies its /S /C quote-stripping rules.
-            return [shell, "/d", "/s", "/c", f'"{command}"']
+            # while leaving cmd.exe's default /C parsing in charge of the script.
+            return [shell, "/d", "/c", f'"{command}"']
         if use_windows and executable in {"powershell", "powershell.exe", "pwsh", "pwsh.exe"}:
             return [shell, "-NoLogo", "-NoProfile", "-Command", command]
         return [shell, "-c", command]
