@@ -21,23 +21,23 @@ function Invoke-Checked {
     )
     & $Command @Arguments
     if ($LASTEXITCODE -ne 0) {
-        throw "命令执行失败：$Command $($Arguments -join ' ')"
+        throw "Command failed: $Command $($Arguments -join ' ')"
     }
 }
 
 function Install-Uv {
     New-Item -ItemType Directory -Force -Path $LocalBin | Out-Null
-    $Arch = if ([Environment]::Is64BitOperatingSystem) { "x86_64-pc-windows-msvc" } else { throw "Lattice 仅支持 64 位 Windows" }
+    $Arch = if ([Environment]::Is64BitOperatingSystem) { "x86_64-pc-windows-msvc" } else { throw "Lattice requires 64-bit Windows" }
     $Url = "https://github.com/astral-sh/uv/releases/download/$UvVersion/uv-$Arch.zip"
     $Zip = Join-Path $env:TEMP "lattice-uv.zip"
     Invoke-WebRequest -Uri $Url -OutFile $Zip -UseBasicParsing
     $Actual = (Get-FileHash -Algorithm SHA256 -Path $Zip).Hash.ToLowerInvariant()
-    if ($Actual -ne $UvSha256.ToLowerInvariant()) { throw "uv SHA256 校验失败：$Actual" }
+    if ($Actual -ne $UvSha256.ToLowerInvariant()) { throw "uv SHA256 verification failed: $Actual" }
     $Extract = Join-Path $env:TEMP "lattice-uv"
     if (Test-Path $Extract) { Remove-Item -Recurse -Force $Extract }
     Expand-Archive -Path $Zip -DestinationPath $Extract -Force
     $Found = Get-ChildItem -Path $Extract -Recurse -Filter uv.exe | Select-Object -First 1
-    if (-not $Found) { throw "uv.exe 解压失败" }
+    if (-not $Found) { throw "Could not extract uv.exe" }
     Copy-Item $Found.FullName $UvExe -Force
 }
 
@@ -76,9 +76,9 @@ if (Test-Path (Join-Path $ProjectDir "uv.lock")) {
 
 $GuiCommand = Join-Path $VenvDir "Scripts\tooldeck-gui.exe"
 $CliCommand = Join-Path $VenvDir "Scripts\tooldeck.exe"
-Write-Host "Lattice 已安装。"
-Write-Host "图形界面：$GuiCommand"
-Write-Host "命令行：  $CliCommand"
+Write-Host "Lattice installed."
+Write-Host "GUI: $GuiCommand"
+Write-Host "CLI: $CliCommand"
 
 if ($StartMenuShortcut) {
     $ShortcutDir = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
@@ -87,7 +87,7 @@ if ($StartMenuShortcut) {
     $Shortcut = $Shell.CreateShortcut($ShortcutPath)
     $Shortcut.TargetPath = $GuiCommand
     $Shortcut.WorkingDirectory = $ProjectDir
-    $Shortcut.Description = "Lattice 晶格中枢"
+    $Shortcut.Description = "Lattice local operations console"
     $Shortcut.Save()
-    Write-Host "开始菜单快捷方式：$ShortcutPath"
+    Write-Host "Start menu shortcut: $ShortcutPath"
 }
