@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from tooldeck.gui.preferences import application_settings
+
 from datetime import date
 
 import pytest
@@ -19,7 +21,7 @@ from tooldeck.startup import (
 
 
 def settings() -> QSettings:
-    return QSettings("ToolDeck", "ToolDeck")
+    return application_settings()
 
 
 def test_startup_daily_modes_and_shuffle_bag(qapp):

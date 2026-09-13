@@ -307,6 +307,8 @@ def test_windows_shell_argv_and_taskkill_command(monkeypatch):
 def test_windows_taskkill_failure_is_reported(monkeypatch):
     class Result:
         returncode = 1
+        stdout = b""
+        stderr = b"Access denied"
 
     monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: Result())
     monkeypatch.setattr("tooldeck.procs.proc_group_alive", lambda _pid: True)

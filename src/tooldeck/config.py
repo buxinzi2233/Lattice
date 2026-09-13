@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Mapping
 
 from . import paths
 from .util import valid_id
@@ -48,7 +47,7 @@ class ToolConfig:
     group: str = ""
 
     @classmethod
-    def from_mapping(cls, tool_id: str, raw: dict[str, Any]) -> "ToolConfig":
+    def from_mapping(cls, tool_id: str, raw: Mapping[str, object]) -> "ToolConfig":
         if not valid_id(tool_id):
             raise ConfigError("工具 ID 只能包含字母、数字、点、下划线和连字符")
 
@@ -156,9 +155,7 @@ def _toml_string(value: str) -> str:
 
 
 def _toml_command(value: str) -> str:
-    # A literal multiline string keeps shell scripts readable and preserves $, \ and quotes.
-    if "\n" in value and "'''" not in value and "\x00" not in value:
-        return "'''" + value + "'''"
+    # Escaped basic strings preserve leading newlines and all shell syntax.
     return _toml_string(value)
 
 
@@ -207,7 +204,13 @@ def save(tool: ToolConfig, *, overwrite: bool = True) -> Path:
             handle.write(data)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, destination)
+        if overwrite:
+            os.replace(temporary, destination)
+        else:
+            try:
+                os.link(temporary, destination)
+            except FileExistsError as exc:
+                raise ConfigError(f"工具 {checked.id} 已存在") from exc
     finally:
         try:
             os.unlink(temporary)
@@ -233,7 +236,7 @@ def import_toml(source: Path, *, overwrite: bool = False) -> ToolConfig:
     if destination.exists() and not overwrite:
         raise ConfigError(f"工具 {tool.id} 已存在")
     try:
-        shutil.copy2(source, destination)
+        save(tool, overwrite=overwrite)
     except OSError as exc:
         raise ConfigError(str(exc)) from exc
     return tool

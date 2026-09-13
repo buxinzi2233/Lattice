@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from .preferences import application_settings
+
 import hashlib
 import math
 import os
@@ -20,12 +22,14 @@ from PySide6.QtWidgets import QSystemTrayIcon
 
 from tooldeck import paths
 from tooldeck.config import ConfigError, ToolConfig, default_shell, delete, import_toml, load_all, load_file, save
-from tooldeck.layout import LayoutState, load as load_layout, move_item, reconcile, save as save_layout
+from tooldeck.layout import LayoutError, LayoutState, load as load_layout, move_item, reconcile, save as save_layout
 from tooldeck.procs import ProcManager, ProcessError, ToolStatus
-from tooldeck.tailer import LogTailer
+from tooldeck.tailer import LogTailer, LogBatch
 from tooldeck.util import fmt_duration, short_home, strip_ansi
 
 from .tool_model import STATE_COLORS, STATE_LABELS, ToolListModel
+from .hardware import HardwareService, HardwareSample
+from .workers import ProcessService, LogService, LogDelivery, StatusSnapshot, OperationResult, Operation
 
 
 class AppBridge(QObject):
@@ -60,7 +64,23 @@ class AppBridge(QObject):
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)
-        self.manager = manager or ProcManager()
+        self.manager = manager
+        self.process_service = ProcessService(self) if manager is None else None
+        self.log_service = LogService(self) if manager is None else None
+        self._layout_error = ""
+        self._status_errors: tuple[str, ...] = ()
+        self._log_preview = ""
+        self._closed = False
+        self._autostart_done = False
+        self._autostart_pending: set[str] = set()
+        if self.process_service is not None:
+            self.process_service.snapshot.connect(self._receive_status)
+            self.process_service.completed.connect(self._operation_completed)
+            self.process_service.pendingChanged.connect(self.selectedChanged)
+        if self.log_service is not None:
+            self.log_service.delivered.connect(self._receive_log)
+        self.hardware_service = HardwareService(self)
+        self.hardware_service.ready.connect(self._hardware_ready)
         self.model = ToolListModel(self)
         self.model.countsChanged.connect(self.summaryChanged)
         self._tools: dict[str, ToolConfig] = {}
@@ -77,7 +97,7 @@ class AppBridge(QObject):
         self._telemetry = self._empty_telemetry()
         self._tray_icon: QSystemTrayIcon | None = None
         self._allow_close = False
-        self._settings = QSettings("ToolDeck", "ToolDeck")
+        self._settings = application_settings()
         self._font_scale = self._normalize_font_scale(
             self._settings.value(self.FONT_SCALE_KEY, self.FONT_SCALE_DEFAULT)
         )
@@ -100,6 +120,10 @@ class AppBridge(QObject):
         self.hardware_warmup_timer.setSingleShot(True)
         self.hardware_warmup_timer.timeout.connect(self.queryHardware)
 
+        self._gpu_failure = ""
+        self.gpu_timeout = QTimer(self)
+        self.gpu_timeout.setSingleShot(True)
+        self.gpu_timeout.timeout.connect(self._gpu_timed_out)
         self.gpu_process = QProcess(self)
         self.gpu_process.finished.connect(self._gpu_finished)
         self.gpu_process.errorOccurred.connect(self._gpu_error)
@@ -129,6 +153,7 @@ class AppBridge(QObject):
             "gpuDetail": "",
             "gpuName": "",
         }
+
 
     @Property(QObject, constant=True)
     def toolModel(self) -> ToolListModel:
@@ -162,6 +187,7 @@ class AppBridge(QObject):
             "stateLabel": STATE_LABELS.get(status.state, status.state),
             "stateColor": STATE_COLORS.get(status.state, STATE_COLORS["stopped"]),
             "active": status.active,
+            "pending": self.process_service is not None and tool.id in self.process_service.pending,
             "pid": status.pid or 0,
             "pidText": str(status.pid) if status.pid else "----",
             "uptime": fmt_duration(status.uptime),
@@ -169,6 +195,7 @@ class AppBridge(QObject):
             "message": status.message or "",
             "logPath": str(paths.log_file(tool.id)),
         }
+
 
     @Property(str, notify=filtersChanged)
     def searchText(self) -> str:
@@ -208,7 +235,7 @@ class AppBridge(QObject):
 
     @Property(bool, notify=filtersChanged)
     def reorderingAllowed(self) -> bool:
-        return not bool(self._search_text.strip()) and self._filter_mode == "all"
+        return not self._layout_error and not bool(self._search_text.strip()) and self._filter_mode == "all"
 
     @Property("QStringList", notify=layoutChanged)
     def groupOrder(self) -> list[str]:
@@ -274,8 +301,9 @@ class AppBridge(QObject):
         self.startupImageChanged.emit()
 
     @Slot(str, object)
-    def _startup_image_failed(self, _message: str, task: object) -> None:
+    def _startup_image_failed(self, message: str, task: object) -> None:
         self._startup_image_tasks.discard(task)
+        self.toastRequested.emit(f"启动图片加载失败：{message}", "warning")
 
     @classmethod
     def _normalize_font_scale(cls, value: Any) -> float:
@@ -338,6 +366,7 @@ class AppBridge(QObject):
         return True
 
     def _set_log_text(self, text: str) -> None:
+        self._log_preview = ""
         if text == self._log_text:
             return
         self._log_text = text[-1_500_000:]
@@ -361,15 +390,34 @@ class AppBridge(QObject):
         self.summaryChanged.emit()
 
     def _load_layout(self) -> None:
-        loaded = load_layout(paths.layout_json())
+        try:
+            loaded = load_layout(paths.layout_json())
+            self._layout_error = ""
+        except LayoutError as exc:
+            self._layout_error = str(exc)
+            message = self._layout_error
+            QTimer.singleShot(0, lambda: self.dialogRequested.emit("布局读取失败", message, "error"))
+            loaded = self._layout
         self._layout = reconcile(self._tools, loaded)
         self.model.set_layout(self._layout)
+        self.filtersChanged.emit()
 
-    def _save_layout(self) -> None:
-        self._layout = reconcile(self._tools, self._layout)
-        save_layout(paths.layout_json(), self._layout)
+    def _save_layout(self) -> bool:
+        if self._layout_error:
+            self.dialogRequested.emit("布局需要修复", self._layout_error, "error")
+            return False
+        try:
+            self._layout = reconcile(self._tools, self._layout)
+            save_layout(paths.layout_json(), self._layout)
+        except OSError as exc:
+            self._load_layout()
+            self._sync_model()
+            self.dialogRequested.emit("布局未保存", f"工具分组以已保存的配置为准；布局写入失败：{exc}", "error")
+            return False
         self.model.set_layout(self._layout)
         self.layoutChanged.emit()
+        return True
+
 
     @Slot(str)
     def selectTool(self, tool_id: str) -> None:
@@ -402,6 +450,7 @@ class AppBridge(QObject):
             self.selectTool(self.model.visible_ids[0])
         self.filtersChanged.emit()
 
+
     @Slot()
     def clearFilters(self) -> None:
         changed = bool(self._search_text) or self._filter_mode != "all"
@@ -412,6 +461,7 @@ class AppBridge(QObject):
             self.selectTool(self.model.visible_ids[0])
         if changed:
             self.filtersChanged.emit()
+
 
     @staticmethod
     def _group_key(value: str) -> str:
@@ -426,8 +476,8 @@ class AppBridge(QObject):
             self._layout.collapsed_groups.remove(key)
         else:
             self._layout.collapsed_groups.add(key)
-        self._save_layout()
-        return True
+        saved = self._save_layout()
+        return saved
 
     @Slot(str, bool, result=bool)
     def setGroupCollapsed(self, group: str, collapsed: bool) -> bool:
@@ -438,8 +488,7 @@ class AppBridge(QObject):
             self._layout.collapsed_groups.add(key)
         else:
             self._layout.collapsed_groups.discard(key)
-        self._save_layout()
-        return True
+        return self._save_layout()
 
     @Slot(str, str, int, result=bool)
     def moveTool(self, tool_id: str, target_group: str, target_index: int) -> bool:
@@ -468,9 +517,9 @@ class AppBridge(QObject):
                 return False
         self._layout.tool_order[source] = source_order
         self._layout.tool_order[target] = move_item(target_order, tool_id, target_index)
-        self._save_layout()
+        saved = self._save_layout()
         self._sync_model(self._selected_id)
-        return True
+        return saved
 
     @Slot(str, result=int)
     def groupToolCount(self, group: str) -> int:
@@ -484,16 +533,20 @@ class AppBridge(QObject):
         if key not in self._layout.group_order:
             return False
         self._layout.group_order = move_item(self._layout.group_order, key, target_index)
-        self._save_layout()
+        saved = self._save_layout()
         self._sync_model(self._selected_id)
-        return True
+        return saved
 
     @Slot(bool)
     def reloadTools(self, show_issues: bool = True) -> None:
         current = self._selected_id
         self._tools, issues = load_all()
         self._load_layout()
-        self._statuses = {tool_id: self.manager.status(tool_id) for tool_id in self._tools}
+        if self.process_service is not None:
+            self._statuses = {tool_id: self._statuses.get(tool_id, ToolStatus(tool_id, "loading")) for tool_id in self._tools}
+            self.process_service.configure(self._tools)
+        else:
+            self._statuses = {tool_id: self.manager.status(tool_id) for tool_id in self._tools}
         self._selected_id = current if current in self._tools else ""
         self._sync_model(current)
         if self._selected_id:
@@ -502,11 +555,14 @@ class AppBridge(QObject):
             if issues:
                 message = "\n".join(f"{issue.path.name}: {issue.message}" for issue in issues)
                 self.dialogRequested.emit("配置读取异常", message, "warning")
-            else:
+            elif not self._layout_error:
                 self.toastRequested.emit("配置索引已重载", "success")
 
     @Slot()
     def refreshStatus(self) -> None:
+        if self.process_service is not None:
+            self.process_service.refresh()
+            return
         try:
             self.manager.tick()
         except ProcessError as exc:
@@ -531,10 +587,41 @@ class AppBridge(QObject):
         self._statuses = updated
         self._sync_model()
 
+    @Slot(object)
+    def _receive_status(self, snapshot: StatusSnapshot) -> None:
+        previous = self.selected
+        self._statuses = {key: value for key, value in snapshot.statuses.items() if key in self._tools}
+        self.model.set_tools(self._tools, self._statuses)
+        self._launch_autostart_ready()
+        if self.selected != previous:
+            self.selectedChanged.emit()
+        if snapshot.errors != self._status_errors:
+            self._status_errors = snapshot.errors
+            if snapshot.errors:
+                self.dialogRequested.emit("状态同步失败", "\n".join(snapshot.errors), "error")
+
+    @Slot(object)
+    def _operation_completed(self, result: OperationResult) -> None:
+        if result.error:
+            self.dialogRequested.emit("工具操作失败", f"{result.tool_id} / {result.action}：{result.error}", "error")
+            return
+        self.toastRequested.emit(f"{result.tool_id} / {result.action} 已完成", "success")
+        if result.action in {"start", "restart"} and result.tool_id == self._selected_id:
+            self._reset_log_tailer()
+
+    def _request_operation(self, tool: ToolConfig, action: Operation) -> None:
+        try:
+            self.process_service.request(tool, action)
+        except ProcessError as exc:
+            self.dialogRequested.emit("无法执行操作", str(exc), "error")
+
     def _selected_tool(self) -> ToolConfig | None:
         return self._tools.get(self._selected_id)
 
     def _start(self, tool: ToolConfig, verb: str) -> None:
+        if self.process_service is not None:
+            self._request_operation(tool, "start")
+            return
         try:
             status = self.manager.start(tool)
         except ProcessError as exc:
@@ -556,6 +643,9 @@ class AppBridge(QObject):
         tool = self._selected_tool()
         if tool is None:
             return
+        if self.process_service is not None:
+            self._request_operation(tool, "stop")
+            return
         try:
             self.manager.stop_begin(tool)
         except ProcessError as exc:
@@ -569,7 +659,12 @@ class AppBridge(QObject):
         tool = self._selected_tool()
         if tool is None:
             return
-        status = self._statuses.get(tool.id, self.manager.status(tool.id))
+        if self.process_service is not None:
+            self._request_operation(tool, "restart")
+            return
+        status = self._statuses.get(tool.id)
+        if status is None:
+            status = self.manager.status(tool.id)
         if not status.active:
             self._start(tool, "重启")
             return
@@ -584,6 +679,11 @@ class AppBridge(QObject):
 
     @Slot()
     def stopAll(self) -> None:
+        if self.process_service is not None:
+            for tool in self._tools.values():
+                if self._statuses.get(tool.id, ToolStatus(tool.id, "loading")).active:
+                    self._request_operation(tool, "stop")
+            return
         failures = self.manager.stop_all_begin(self._tools)
         self._pending_restart.clear()
         if failures:
@@ -594,6 +694,13 @@ class AppBridge(QObject):
 
     @Slot()
     def startAutostart(self) -> None:
+        if self._autostart_done:
+            return
+        self._autostart_done = True
+        if self.process_service is not None:
+            self._autostart_pending = {tool.id for tool in self._tools.values() if tool.autostart}
+            self._launch_autostart_ready()
+            return
         failures: list[str] = []
         for tool in self._tools.values():
             if not tool.autostart or self.manager.status(tool.id).active:
@@ -605,6 +712,15 @@ class AppBridge(QObject):
         self.refreshStatus()
         if failures:
             self.dialogRequested.emit("部分自动启动失败", "\n".join(failures), "warning")
+
+    def _launch_autostart_ready(self) -> None:
+        for tool_id in tuple(self._autostart_pending):
+            status = self._statuses.get(tool_id)
+            if status is None or status.state == "loading":
+                continue
+            self._autostart_pending.discard(tool_id)
+            if status.state in {"stopped", "exited"} and tool_id in self._tools:
+                self._request_operation(self._tools[tool_id], "start")
 
     @staticmethod
     def _base_id(text: str) -> str:
@@ -683,26 +799,25 @@ class AppBridge(QObject):
 
     @Slot("QVariantMap", result=bool)
     def saveToolDraft(self, draft: dict[str, Any]) -> bool:
-        original_id = str(draft.get("originalId", "")).strip()
-        tool_id = str(draft.get("id", "")).strip()
-        if original_id and tool_id != original_id:
-            self.dialogRequested.emit("无法保存", "已登记工具的 ID 不可更改", "error")
-            return False
         try:
-            tool = ToolConfig.from_mapping(
-                tool_id,
-                {
-                    "name": str(draft.get("name", "")),
-                    "group": str(draft.get("group", "")),
-                    "cmd": str(draft.get("cmd", "")),
-                    "cwd": str(draft.get("cwd", "")),
-                    "shell": str(draft.get("shell", "")),
-                    "env": self._parse_env(str(draft.get("envText", ""))),
-                    "autostart": bool(draft.get("autostart", False)),
-                    "stop_signal": str(draft.get("stopSignal", "TERM")),
-                    "stop_timeout": float(draft.get("stopTimeout", 10.0)),
-                },
-            )
+            required = ("originalId", "id", "name", "group", "cmd", "cwd", "shell", "envText", "stopSignal")
+            for key in required:
+                if key not in draft or not isinstance(draft[key], str):
+                    raise ConfigError(f"编辑数据的 {key} 必须是字符串")
+            if type(draft.get("autostart")) is not bool:
+                raise ConfigError("编辑数据的 autostart 必须是布尔值")
+            if type(draft.get("stopTimeout")) not in {int, float}:
+                raise ConfigError("编辑数据的 stopTimeout 必须是数字")
+            original_id = draft["originalId"].strip()
+            tool_id = draft["id"].strip()
+            if original_id and tool_id != original_id:
+                raise ConfigError("已登记工具的 ID 不可更改")
+            tool = ToolConfig.from_mapping(tool_id, {
+                "name": draft["name"], "group": draft["group"], "cmd": draft["cmd"],
+                "cwd": draft["cwd"], "shell": draft["shell"],
+                "env": self._parse_env(draft["envText"]), "autostart": draft["autostart"],
+                "stop_signal": draft["stopSignal"], "stop_timeout": draft["stopTimeout"],
+            })
             save(tool, overwrite=bool(original_id))
         except (ConfigError, OSError, TypeError, ValueError) as exc:
             self.dialogRequested.emit("无法保存工具", str(exc), "error")
@@ -718,7 +833,9 @@ class AppBridge(QObject):
         if tool is None:
             return
         status = self._statuses.get(tool.id, ToolStatus(tool.id, "stopped"))
-        if status.active:
+        if status.active or status.state in {"loading", "error"} or (
+            self.process_service is not None and tool.id in self.process_service.pending
+        ):
             self.dialogRequested.emit("无法删除", "工具仍在运行，请先停止该单元", "warning")
             return
         try:
@@ -876,145 +993,82 @@ class AppBridge(QObject):
             )
 
     def _reset_log_tailer(self) -> None:
+        if self.log_service is not None:
+            self._set_log_text("")
+            self.log_service.select(paths.log_file(self._selected_id) if self._selected_id else None)
+            return
         if not self._selected_id:
             self._tailer = None
             self._set_log_text("")
             return
         self._tailer = LogTailer(paths.log_file(self._selected_id))
-        self._tailer.seek_tail()
+        self._tailer.seek_tail(512 * 1024)
         self._set_log_text("")
         self._tail_log()
 
     def _tail_log(self) -> None:
-        if self._tailer is None:
+        if self.log_service is not None:
+            self.log_service.read()
             return
-        chunk = self._tailer.read()
-        if chunk:
-            self._set_log_text(self._log_text + strip_ansi(chunk))
+        if self._tailer is not None:
+            try:
+                self._apply_log_batch(self._tailer.read_batch())
+            except OSError as exc:
+                self.dialogRequested.emit("日志读取失败", str(exc), "error")
+
+    @Slot(object)
+    def _receive_log(self, delivery: LogDelivery) -> None:
+        if delivery.error:
+            self.dialogRequested.emit("日志读取失败", delivery.error, "error")
+            return
+        self._apply_log_batch(delivery.batch)
+
+    def _apply_log_batch(self, batch: LogBatch) -> None:
+        previous = self._log_preview
+        if batch.reset:
+            self._set_log_text("")
+            previous = ""
+        if not batch.completed and batch.preview == previous:
+            return
+        remove = len(previous)
+        base = self._log_text[:-remove] if remove else self._log_text
+        addition = batch.completed + batch.preview
+        merged = base + addition
+        self._log_text = merged[-1_500_000:]
+        self._log_preview = batch.preview
+        self.logChanged.emit()
 
     @Slot()
     def clearVisibleLog(self) -> None:
-        if self._tailer is not None:
-            try:
-                self._tailer.offset = self._tailer.path.stat().st_size
-            except FileNotFoundError:
-                self._tailer.reset()
+        if self.log_service is not None:
+            self.log_service.clear()
+        elif self._tailer is not None:
+            self._tailer.seek_end()
         self._set_log_text("[LATTICE] DISPLAY BUFFER CLEARED · DISK LOG PRESERVED\n")
         self.toastRequested.emit("仅清除当前显示；磁盘日志未删除", "success")
 
-    @staticmethod
-    def _read_cpu_percent(last: tuple[int, int] | None) -> tuple[float | None, tuple[int, int] | None]:
-        if os.name == "nt":
-            current = AppBridge._read_windows_cpu_times()
-            if current is None:
-                return None, last
-            idle, total = current
-        else:
-            try:
-                fields = Path("/proc/stat").read_text(encoding="utf-8").splitlines()[0].split()[1:]
-                values = [int(value) for value in fields]
-            except (OSError, ValueError, IndexError):
-                return None, last
-            if len(values) < 4:
-                return None, last
-            idle = values[3] + (values[4] if len(values) > 4 else 0)
-            total = sum(values)
-        current = (idle, total)
-        if last is None:
-            return None, current
-        total_delta = total - last[1]
-        if total_delta <= 0:
-            return None, current
-        value = (1 - (idle - last[0]) / total_delta) * 100
-        return max(0.0, min(100.0, value)), current
-
-    @staticmethod
-    def _read_windows_cpu_times() -> tuple[int, int] | None:
-        if os.name != "nt":
-            return None
-        import ctypes
-        from ctypes import wintypes
-
-        class FileTime(ctypes.Structure):
-            _fields_ = (("low", wintypes.DWORD), ("high", wintypes.DWORD))
-
-            def value(self) -> int:
-                return (self.high << 32) | self.low
-
-        idle = FileTime()
-        kernel = FileTime()
-        user = FileTime()
-        if not ctypes.windll.kernel32.GetSystemTimes(
-            ctypes.byref(idle),
-            ctypes.byref(kernel),
-            ctypes.byref(user),
-        ):
-            return None
-        return idle.value(), kernel.value() + user.value()
-
-    @staticmethod
-    def _read_memory() -> tuple[float, str] | None:
-        if os.name == "nt":
-            return AppBridge._read_windows_memory()
-        try:
-            values: dict[str, int] = {}
-            for line in Path("/proc/meminfo").read_text(encoding="utf-8").splitlines():
-                key, raw = line.split(":", 1)
-                values[key] = int(raw.strip().split()[0])
-            total = values["MemTotal"]
-            available = values.get("MemAvailable", values.get("MemFree", 0))
-        except (OSError, ValueError, KeyError):
-            return None
-        if total <= 0:
-            return None
-        used = total - available
-        return used / total * 100, f"{used / 1024 / 1024:.1f} / {total / 1024 / 1024:.1f} GiB"
-
-    @staticmethod
-    def _read_windows_memory() -> tuple[float, str] | None:
-        if os.name != "nt":
-            return None
-        import ctypes
-        from ctypes import wintypes
-
-        class MemoryStatus(ctypes.Structure):
-            _fields_ = (
-                ("length", wintypes.DWORD),
-                ("memory_load", wintypes.DWORD),
-                ("total_physical", ctypes.c_ulonglong),
-                ("available_physical", ctypes.c_ulonglong),
-                ("total_page_file", ctypes.c_ulonglong),
-                ("available_page_file", ctypes.c_ulonglong),
-                ("total_virtual", ctypes.c_ulonglong),
-                ("available_virtual", ctypes.c_ulonglong),
-                ("available_extended_virtual", ctypes.c_ulonglong),
-            )
-
-        status = MemoryStatus()
-        status.length = ctypes.sizeof(status)
-        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-            return None
-        if status.total_physical <= 0:
-            return None
-        used = status.total_physical - status.available_physical
-        gib = 1024**3
-        return used / status.total_physical * 100, f"{used / gib:.1f} / {status.total_physical / gib:.1f} GiB"
 
     @Slot()
     def queryHardware(self) -> None:
         if self._hardware_paused:
             return
+        self.hardware_service.read()
+
+    @Slot(object)
+    def _hardware_ready(self, sample: HardwareSample) -> None:
+        if self._hardware_paused or self._closed:
+            return
         telemetry = dict(self._telemetry)
-        cpu, self._last_cpu_sample = self._read_cpu_percent(self._last_cpu_sample)
-        memory = self._read_memory()
+        cpu = sample.cpu
+        memory = sample.memory
         available = 0
         telemetry["cpuValue"] = cpu if cpu is not None else -1.0
-        telemetry["cpuText"] = f"{cpu:.0f}%" if cpu is not None else "采样中"
-        telemetry["cpuDetail"] = ""
+        telemetry["cpuText"] = f"{cpu:.0f}%" if cpu is not None else ("读取失败" if sample.cpu_error else "采样中")
+        telemetry["cpuDetail"] = sample.cpu_error
         if cpu is not None:
             available += 1
         if memory is None:
-            telemetry.update(memoryValue=-1.0, memoryText="不可用", memoryDetail="无法读取系统内存")
+            telemetry.update(memoryValue=-1.0, memoryText="不可用", memoryDetail=sample.memory_error)
         else:
             telemetry.update(memoryValue=memory[0], memoryText=f"{memory[0]:.0f}%", memoryDetail=memory[1])
             available += 1
@@ -1023,9 +1077,11 @@ class AppBridge(QObject):
         self.telemetryChanged.emit()
 
         if shutil.which("nvidia-smi") is None:
-            self._set_gpu_unavailable("无 NVIDIA")
+            self._set_gpu_unavailable("未安装 nvidia-smi；此查询仅支持 NVIDIA")
             return
         if self.gpu_process.state() == QProcess.ProcessState.NotRunning:
+            self._gpu_failure = ""
+            self.gpu_timeout.start(2500)
             self.gpu_process.start(
                 "nvidia-smi",
                 [
@@ -1034,19 +1090,29 @@ class AppBridge(QObject):
                 ],
             )
 
+    def _gpu_timed_out(self) -> None:
+        self._gpu_failure = "nvidia-smi 查询超过 2.5 秒；可在硬件菜单重新查询"
+        self.gpu_process.kill()
+        self._set_gpu_unavailable(self._gpu_failure)
+
     def _gpu_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
+        self.gpu_timeout.stop()
         if self._hardware_paused:
             return
         raw = bytes(self.gpu_process.readAllStandardOutput()).decode(errors="replace").splitlines()
+        if self._gpu_failure:
+            self._set_gpu_unavailable(self._gpu_failure)
+            return
         if exit_code != 0 or not raw:
-            self._set_gpu_unavailable("读取失败")
+            error = bytes(self.gpu_process.readAllStandardError()).decode(errors="replace").strip()
+            self._set_gpu_unavailable(f"nvidia-smi 退出码 {exit_code}；输出：{raw!r}；错误：{error}")
             return
         try:
             parts = [value.strip() for value in raw[0].split(",")]
             utilization, used, total = (float(value) for value in parts[:3])
             name = ", ".join(parts[3:]) or "NVIDIA GPU"
-        except (ValueError, IndexError):
-            self._set_gpu_unavailable("读取失败")
+        except (ValueError, IndexError) as exc:
+            self._set_gpu_unavailable(f"nvidia-smi 返回了无法解析的数据 {raw[0]!r}：{exc}")
             return
         self._telemetry.update(
             gpuValue=utilization,
@@ -1058,7 +1124,7 @@ class AppBridge(QObject):
 
     def _gpu_error(self, _error: QProcess.ProcessError) -> None:
         if not self._hardware_paused:
-            self._set_gpu_unavailable("读取失败")
+            self._set_gpu_unavailable(self._gpu_failure or f"nvidia-smi 查询失败：{self.gpu_process.errorString()}")
 
     def _set_gpu_unavailable(self, detail: str) -> None:
         self._telemetry.update(gpuValue=-1.0, gpuText="不可用", gpuDetail=detail, gpuName="")
@@ -1103,7 +1169,7 @@ class AppBridge(QObject):
         if self._allow_close or not self.trayAvailable:
             self.shutdown()
             return True
-        settings = QSettings("ToolDeck", "ToolDeck")
+        settings = application_settings()
         if not settings.value("qml_tray_notice_shown", False, type=bool) and self._tray_icon is not None:
             self._tray_icon.showMessage(
                 "Lattice 仍在运行",
@@ -1120,10 +1186,19 @@ class AppBridge(QObject):
 
     @Slot()
     def shutdown(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
         self.status_timer.stop()
         self.log_timer.stop()
         self.hardware_timer.stop()
         self.hardware_warmup_timer.stop()
+        self.gpu_timeout.stop()
+        self.hardware_service.shutdown()
+        if self.process_service is not None:
+            self.process_service.shutdown()
+        if self.log_service is not None:
+            self.log_service.shutdown()
         if self.gpu_process.state() != QProcess.ProcessState.NotRunning:
             self.gpu_process.kill()
             self.gpu_process.waitForFinished(1000)

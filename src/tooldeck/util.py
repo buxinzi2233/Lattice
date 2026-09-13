@@ -235,3 +235,15 @@ def disp_width(s: str) -> int:
 
 def pad(s: str, width: int) -> str:
     return s + " " * max(0, width - disp_width(s))
+
+
+def active_posix_groups() -> set[int]:
+    """Capture live POSIX groups once; processes disappearing during a scan are normal."""
+    groups: set[int] = set()
+    for entry in Path("/proc").iterdir():
+        if not entry.name.isdigit():
+            continue
+        fields = _proc_stat_fields(int(entry.name))
+        if fields is not None and len(fields) >= 3 and fields[0] != "Z":
+            groups.add(int(fields[2]))
+    return groups

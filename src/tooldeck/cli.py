@@ -11,6 +11,7 @@ from . import paths
 from .config import ConfigError, ToolConfig, default_shell, delete, load_all, save
 from .procs import ProcManager, ProcessError
 from .util import disp_width, fmt_duration, pad
+from .tailer import LogTailer, tail_bytes
 
 
 def _tools_or_report() -> dict[str, ToolConfig]:
@@ -108,39 +109,29 @@ def _print_list(manager: ProcManager, tools: dict[str, ToolConfig]) -> None:
 
 
 def _tail_lines(path: Path, count: int) -> bytes:
-    if count <= 0:
-        return b""
-    try:
-        data = path.read_bytes()
-    except FileNotFoundError:
-        return b""
-    return b"\n".join(data.splitlines()[-count:]) + (b"\n" if data else b"")
+    return tail_bytes(path, count)
 
 
 def _show_logs(tool_id: str, lines: int, follow: bool) -> None:
     log_path = paths.log_file(tool_id)
-    initial = _tail_lines(log_path, lines)
-    if initial:
-        sys.stdout.buffer.write(initial)
-        sys.stdout.buffer.flush()
+    tailer = LogTailer(log_path)
+    end = tailer.seek_lines(lines)
+    while tailer.offset < end:
+        previous = tailer.offset
+        batch = tailer.read_batch()
+        chunk = batch.completed + tailer.flush_pending()
+        sys.stdout.buffer.write(chunk.encode("utf-8"))
+        if batch.reset or tailer.offset <= previous:
+            break
+    sys.stdout.buffer.flush()
     if not follow:
         return
-    position = log_path.stat().st_size if log_path.exists() else 0
     try:
         while True:
-            try:
-                size = log_path.stat().st_size
-                if size < position:
-                    position = 0
-                if size > position:
-                    with log_path.open("rb") as handle:
-                        handle.seek(position)
-                        chunk = handle.read()
-                        position = handle.tell()
-                    sys.stdout.buffer.write(chunk)
-                    sys.stdout.buffer.flush()
-            except FileNotFoundError:
-                position = 0
+            chunk = tailer.read() + tailer.flush_pending()
+            if chunk:
+                sys.stdout.buffer.write(chunk.encode("utf-8"))
+                sys.stdout.buffer.flush()
             time.sleep(0.2)
     except KeyboardInterrupt:
         return

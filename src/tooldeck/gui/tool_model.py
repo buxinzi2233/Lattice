@@ -11,19 +11,23 @@ from tooldeck.util import fmt_duration, short_home
 
 
 STATE_LABELS = {
+    "loading": "读取中",
+    "error": "状态异常",
     "running": "运行中",
     "stopping": "停止中",
     "exited": "已退出",
     "stopped": "已停止",
 }
 
+
 STATE_COLORS = {
+    "loading": "#7b827e",
+    "error": "#ec5a36",
     "running": "#16b8a6",
     "stopping": "#f0c928",
     "exited": "#ec5a36",
     "stopped": "#7b827e",
 }
-
 
 class ToolListModel(QAbstractListModel):
     """Flat presentation model containing group headers and tool rows.
@@ -89,6 +93,7 @@ class ToolListModel(QAbstractListModel):
         self._rows: list[tuple[str, str]] = []
         self._filter_text = ""
         self._filter_state = "all"
+        self._published: list[dict[int, object]] = []
 
     def roleNames(self) -> dict[int, bytes]:
         return self._ROLES
@@ -214,19 +219,28 @@ class ToolListModel(QAbstractListModel):
         return True
 
     def set_layout(self, layout: LayoutState) -> None:
+        previous = (self.groupCount, self.visibleCount)
         self._layout = layout
         self._rebuild()
+        if previous != (self.groupCount, self.visibleCount):
+            self.countsChanged.emit()
 
     def set_tools(self, tools: dict[str, ToolConfig], statuses: dict[str, ToolStatus]) -> None:
         previous_counts = (self.totalCount, self.visibleCount, self.runningCount)
         self._tools = dict(tools)
         self._statuses = dict(statuses)
         rebuilt = self._rebuild()
-        if not rebuilt and self._rows:
-            self.dataChanged.emit(self.index(0, 0), self.index(len(self._rows) - 1, 0), list(self._ROLES))
+        current = [{role: self.data(self.index(row, 0), role) for role in self._ROLES} for row in range(len(self._rows))]
+        if not rebuilt and len(current) == len(self._published):
+            for row, values in enumerate(current):
+                changed = [role for role, value in values.items() if self._published[row].get(role) != value]
+                if changed:
+                    self.dataChanged.emit(self.index(row, 0), self.index(row, 0), changed)
+        self._published = current
         current_counts = (self.totalCount, self.visibleCount, self.runningCount)
         if current_counts != previous_counts:
             self.countsChanged.emit()
+
 
     def set_filter(self, text: str, state: str) -> None:
         normalized_state = state if state in {"all", "running", "stopped"} else "all"
