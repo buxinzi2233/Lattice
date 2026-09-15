@@ -5,24 +5,31 @@ from typing import Any
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Property, Qt, Signal, Slot
 
 from tooldeck.config import ToolConfig
+from tooldeck.groups import display_group_name
 from tooldeck.layout import LayoutState
 from tooldeck.procs import ToolStatus
 from tooldeck.util import fmt_duration, short_home
 
 
 STATE_LABELS = {
+    "starting": "正在启动",
     "running": "运行中",
+    "unready": "启动超时",
     "stopping": "停止中",
     "exited": "已退出",
     "stopped": "已停止",
 }
 
 STATE_COLORS = {
+    "starting": "#f0c928",
     "running": "#16b8a6",
+    "unready": "#ec5a36",
     "stopping": "#f0c928",
     "exited": "#ec5a36",
     "stopped": "#7b827e",
 }
+
+_STOPPED_STATUS = ToolStatus("", "stopped")
 
 
 class ToolListModel(QAbstractListModel):
@@ -44,7 +51,8 @@ class ToolListModel(QAbstractListModel):
     ActiveRole = StateColorRole + 1
     PidTextRole = ActiveRole + 1
     UptimeRole = PidTextRole + 1
-    AutostartRole = UptimeRole + 1
+    ExitCodeRole = UptimeRole + 1
+    AutostartRole = ExitCodeRole + 1
     SequenceRole = AutostartRole + 1
     GroupRole = SequenceRole + 1
     RowTypeRole = GroupRole + 1
@@ -67,6 +75,7 @@ class ToolListModel(QAbstractListModel):
         ActiveRole: b"toolActive",
         PidTextRole: b"pidText",
         UptimeRole: b"uptimeText",
+        ExitCodeRole: b"exitCodeText",
         AutostartRole: b"toolAutostart",
         SequenceRole: b"sequenceText",
         GroupRole: b"toolGroup",
@@ -89,6 +98,9 @@ class ToolListModel(QAbstractListModel):
         self._rows: list[tuple[str, str]] = []
         self._filter_text = ""
         self._filter_state = "all"
+        self._running_count = 0
+        self._idle_count = 0
+        self._exited_count = 0
 
     def roleNames(self) -> dict[int, bytes]:
         return self._ROLES
@@ -109,7 +121,7 @@ class ToolListModel(QAbstractListModel):
             if role == self.RowTypeRole:
                 return "group"
             if role in {self.GroupNameRole, Qt.ItemDataRole.DisplayRole}:
-                return value or "未分组"
+                return display_group_name(value)
             if role == self.GroupKeyRole:
                 return value
             if role == self.CollapsedRole:
@@ -126,7 +138,7 @@ class ToolListModel(QAbstractListModel):
 
         tool_id = value
         tool = self._tools[tool_id]
-        status = self._statuses.get(tool_id, ToolStatus(tool_id, "stopped"))
+        status = self._statuses.get(tool_id, _STOPPED_STATUS)
         if role == self.RowTypeRole:
             return "tool"
         if role == self.ToolIdRole:
@@ -149,12 +161,14 @@ class ToolListModel(QAbstractListModel):
             return str(status.pid) if status.pid else "----"
         if role == self.UptimeRole:
             return fmt_duration(status.uptime)
+        if role == self.ExitCodeRole:
+            return str(status.exit_code) if status.exit_code is not None else "--"
         if role == self.AutostartRole:
             return tool.autostart
         if role == self.SequenceRole:
-            return f"{self._ordered_ids().index(tool_id) + 1:02d}"
+            return self.sequence_text(tool_id)
         if role in {self.GroupRole, self.GroupNameRole}:
-            return tool.group or "未分组"
+            return display_group_name(tool.group)
         if role == self.GroupKeyRole:
             return tool.group or ""
         if role == self.DragHandleRole:
@@ -173,17 +187,23 @@ class ToolListModel(QAbstractListModel):
 
     def _ordered_ids(self) -> list[str]:
         result: list[str] = []
+        seen: set[str] = set()
         for group in self._layout.group_order:
-            result.extend(tool_id for tool_id in self._layout.tool_order.get(group, []) if tool_id in self._tools)
-        result.extend(tool_id for tool_id in self._tools if tool_id not in result)
+            for tool_id in self._layout.tool_order.get(group, []):
+                if tool_id in self._tools and tool_id not in seen:
+                    result.append(tool_id)
+                    seen.add(tool_id)
+        result.extend(tool_id for tool_id in self._tools if tool_id not in seen)
         return result
 
     def _matches(self, tool_id: str) -> bool:
         tool = self._tools[tool_id]
-        status = self._statuses.get(tool_id, ToolStatus(tool_id, "stopped"))
+        status = self._statuses.get(tool_id, _STOPPED_STATUS)
         if self._filter_state == "running" and not status.active:
             return False
-        if self._filter_state == "stopped" and status.active:
+        if self._filter_state == "stopped" and status.state != "stopped":
+            return False
+        if self._filter_state == "exited" and status.state != "exited":
             return False
         query = self._filter_text.casefold().strip()
         if not query:
@@ -217,19 +237,121 @@ class ToolListModel(QAbstractListModel):
         self._layout = layout
         self._rebuild()
 
-    def set_tools(self, tools: dict[str, ToolConfig], statuses: dict[str, ToolStatus]) -> None:
-        previous_counts = (self.totalCount, self.visibleCount, self.runningCount)
+    def set_tools(self, tools: dict[str, ToolConfig], statuses: dict[str, ToolStatus]) -> set[str]:
+        previous_tools = self._tools
+        previous_statuses = self._statuses
+        previous_counts = (
+            self.totalCount,
+            self.visibleCount,
+            self.runningCount,
+            self.idleCount,
+            self.exitedCount,
+        )
+        tool_keys_changed = previous_tools.keys() != tools.keys()
+        tools_values_changed = previous_tools != tools
+        group_changed = tool_keys_changed or (
+            tools_values_changed
+            and any(
+                previous_tools[tool_id].group != tool.group
+                for tool_id, tool in tools.items()
+                if tool_id in previous_tools
+            )
+        )
+        search_fields_changed = bool(self._filter_text.strip()) and tools_values_changed and any(
+            previous_tools.get(tool_id) is None
+            or (
+                previous_tools[tool_id].name,
+                previous_tools[tool_id].cwd,
+                previous_tools[tool_id].group,
+            )
+            != (tool.name, tool.cwd, tool.group)
+            for tool_id, tool in tools.items()
+        )
+        status_values_changed = previous_statuses != statuses
+        status_filter_changed = self._filter_state != "all" and status_values_changed
         self._tools = dict(tools)
         self._statuses = dict(statuses)
-        rebuilt = self._rebuild()
-        if not rebuilt and self._rows:
-            self.dataChanged.emit(self.index(0, 0), self.index(len(self._rows) - 1, 0), list(self._ROLES))
-        current_counts = (self.totalCount, self.visibleCount, self.runningCount)
+        states = [self._statuses.get(tool_id, _STOPPED_STATUS) for tool_id in self._tools]
+        self._running_count = sum(status.active for status in states)
+        self._idle_count = sum(status.state == "stopped" for status in states)
+        self._exited_count = sum(status.state == "exited" for status in states)
+        rebuilt = self._rebuild() if group_changed or search_fields_changed or status_filter_changed else False
+        changed_ids: set[str] = set()
+        if rebuilt:
+            changed_ids.update(self._tools)
+        elif self._rows and (tools_values_changed or status_values_changed or self._running_count):
+            changed_rows: list[tuple[int, tuple[int, ...]]] = []
+            uptime_rows: list[int] = []
+            tool_roles = (
+                self.NameRole,
+                self.CwdRole,
+                self.CommandRole,
+                self.AutostartRole,
+                self.GroupRole,
+                self.GroupNameRole,
+                self.GroupKeyRole,
+            )
+            for row, (row_type, tool_id) in enumerate(self._rows):
+                if row_type != "tool":
+                    continue
+                roles: set[int] = set()
+                old_tool = previous_tools.get(tool_id)
+                new_tool = self._tools[tool_id]
+                if old_tool != new_tool:
+                    changed_ids.add(tool_id)
+                    roles.update(tool_roles)
+
+                old_status = previous_statuses.get(tool_id, _STOPPED_STATUS)
+                new_status = self._statuses.get(tool_id, _STOPPED_STATUS)
+                if old_status != new_status:
+                    changed_ids.add(tool_id)
+                    if old_status.state != new_status.state:
+                        roles.update(
+                            {
+                                self.StateRole,
+                                self.StateLabelRole,
+                                self.StateColorRole,
+                                self.ActiveRole,
+                                self.UptimeRole,
+                            }
+                        )
+                    if old_status.pid != new_status.pid:
+                        roles.add(self.PidTextRole)
+                    if (
+                        old_status.started_at != new_status.started_at
+                        or old_status.exited_at != new_status.exited_at
+                    ):
+                        roles.add(self.UptimeRole)
+                    if old_status.exit_code != new_status.exit_code:
+                        roles.add(self.ExitCodeRole)
+                if new_status.active:
+                    changed_ids.add(tool_id)
+                    uptime_rows.append(row)
+                    roles.discard(self.UptimeRole)
+                if roles:
+                    changed_rows.append((row, tuple(sorted(roles))))
+
+            for row, roles in changed_rows:
+                self.dataChanged.emit(self.index(row, 0), self.index(row, 0), list(roles))
+            if uptime_rows:
+                self.dataChanged.emit(
+                    self.index(min(uptime_rows), 0),
+                    self.index(max(uptime_rows), 0),
+                    [self.UptimeRole],
+                )
+        current_counts = (
+            self.totalCount,
+            self.visibleCount,
+            self.runningCount,
+            self.idleCount,
+            self.exitedCount,
+        )
         if current_counts != previous_counts:
             self.countsChanged.emit()
+        return changed_ids
 
     def set_filter(self, text: str, state: str) -> None:
-        normalized_state = state if state in {"all", "running", "stopped"} else "all"
+        normalized_state = state if state in {"all", "running", "stopped", "exited"} else "all"
         if text == self._filter_text and normalized_state == self._filter_state:
             return
         self._filter_text = text
@@ -252,11 +374,19 @@ class ToolListModel(QAbstractListModel):
 
     @Property(int, notify=countsChanged)
     def runningCount(self) -> int:
-        return sum(self._statuses.get(tool_id, ToolStatus(tool_id, "stopped")).active for tool_id in self._tools)
+        return self._running_count
 
     @Property(int, notify=countsChanged)
     def stoppedCount(self) -> int:
         return self.totalCount - self.runningCount
+
+    @Property(int, notify=countsChanged)
+    def idleCount(self) -> int:
+        return self._idle_count
+
+    @Property(int, notify=countsChanged)
+    def exitedCount(self) -> int:
+        return self._exited_count
 
     @property
     def visible_ids(self) -> tuple[str, ...]:
@@ -265,6 +395,10 @@ class ToolListModel(QAbstractListModel):
     @property
     def rows(self) -> tuple[tuple[str, str], ...]:
         return tuple(self._rows)
+
+    def sequence_text(self, tool_id: str) -> str:
+        ordered = self._ordered_ids()
+        return f"{ordered.index(tool_id) + 1:02d}" if tool_id in ordered else "--"
 
     @Slot(int, result="QVariantMap")
     def get(self, row: int) -> dict[str, Any]:

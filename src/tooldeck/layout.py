@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable, Mapping
+
+from .storage import atomic_write_text
 
 SCHEMA_VERSION = 1
 
@@ -23,6 +24,13 @@ class LayoutState:
     group_order: list[str] = field(default_factory=list)
     tool_order: dict[str, list[str]] = field(default_factory=dict)
     collapsed_groups: set[str] = field(default_factory=set)
+
+    def copy(self) -> "LayoutState":
+        return LayoutState(
+            group_order=list(self.group_order),
+            tool_order={key: list(value) for key, value in self.tool_order.items()},
+            collapsed_groups=set(self.collapsed_groups),
+        )
 
     def to_mapping(self) -> dict[str, object]:
         return {
@@ -122,21 +130,8 @@ def load(path: Path) -> LayoutState:
 
 def save(path: Path, state: LayoutState) -> Path:
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(state.to_mapping(), ensure_ascii=False, indent=2) + "\n"
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, path)
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-    return path
+    return atomic_write_text(path, payload)
 
 
 def move_item(values: Iterable[str], item: str, index: int) -> list[str]:

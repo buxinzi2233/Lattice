@@ -19,8 +19,10 @@ Item {
     Rectangle {
         anchors.fill: parent
         color: row.hovered ? Theme.paperRaised : Theme.paper
-        border.width: 1
+        border.width: Theme.lineWidth
         border.color: Theme.line
+
+        Behavior on color { ColorAnimation { duration: Theme.fast } }
     }
     Rectangle {
         width: 4
@@ -33,11 +35,14 @@ Item {
         anchors.left: parent.left
         anchors.leftMargin: 16
         anchors.verticalCenter: parent.verticalCenter
-        name: row.collapsed ? "expand" : "collapse"
+        name: "collapse"
         color: row.groupKey.length ? Theme.telemetryDark : Theme.faint
         opticalY: 0.3
         width: 18
         height: 18
+        rotation: row.collapsed ? 180 : 0
+
+        Behavior on rotation { NumberAnimation { duration: Theme.normal; easing.type: Theme.easeStandard } }
     }
     Text {
         anchors.left: parent.left
@@ -71,5 +76,8 @@ Item {
         color: Theme.faint
         width: 16
         height: 16
+        opacity: row.hovered || row.dragging ? 1 : 0.62
+
+        Behavior on opacity { NumberAnimation { duration: Theme.fast; easing.type: Theme.easeStandard } }
     }
 }

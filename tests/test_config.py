@@ -6,7 +6,18 @@ from pathlib import Path
 import pytest
 
 from tooldeck import paths
-from tooldeck.config import ConfigError, ToolConfig, default_shell, import_toml, load_all, load_file, save
+from tooldeck.config import (
+    ConfigError,
+    LaunchConfig,
+    ReadinessConfig,
+    ToolConfig,
+    default_shell,
+    import_toml,
+    load_all,
+    load_file,
+    save,
+)
+from tooldeck.drafts import tool_from_draft, tool_to_draft
 
 
 def test_config_round_trip_preserves_script_and_unicode():
@@ -25,6 +36,60 @@ def test_config_round_trip_preserves_script_and_unicode():
     destination = save(tool)
     loaded = load_file(destination)
     assert loaded == dataclasses.replace(tool, cwd=str(Path(tool.cwd).expanduser()))
+
+
+def test_structured_launch_and_readiness_round_trip(tmp_path):
+    source = tmp_path / "启动.py"
+    interpreter = tmp_path / ".venv" / "bin" / "python"
+    tool = ToolConfig(
+        "structured",
+        "Structured",
+        f"{interpreter} {source}",
+        str(tmp_path),
+        launch=LaunchConfig(
+            "argv",
+            "python",
+            str(source),
+            (str(interpreter), str(source), "--port", "8765"),
+            str(interpreter),
+            True,
+        ),
+        readiness=ReadinessConfig("http", 2, 90, "http://127.0.0.1:8765/health"),
+    )
+
+    destination = save(tool)
+
+    assert load_file(destination) == tool
+    text = destination.read_text()
+    assert "[launch]" in text
+    assert "[readiness]" in text
+
+
+def test_legacy_config_does_not_require_new_tables():
+    destination = save(ToolConfig("legacy", "Legacy", "echo ready", "/tmp"))
+
+    assert "[launch]" not in destination.read_text()
+    assert load_file(destination).launch is None
+
+
+def test_switching_to_raw_command_drops_structured_launch(tmp_path):
+    source = tmp_path / "run.sh"
+    source.write_text("#!/bin/sh\n", encoding="utf-8")
+    source.chmod(0o755)
+    tool = ToolConfig(
+        "structured",
+        "Structured",
+        str(source),
+        str(tmp_path),
+        launch=LaunchConfig("argv", "shell", str(source), (str(source),)),
+    )
+    draft = tool_to_draft(tool)
+    draft.update(rawMode=True, cmd="echo raw")
+
+    converted = tool_from_draft(draft)
+
+    assert converted.launch is None
+    assert converted.cmd == "echo raw"
 
 
 def test_load_all_reports_bad_file_without_hiding_good_file():

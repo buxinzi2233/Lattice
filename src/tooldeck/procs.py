@@ -1,46 +1,84 @@
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
+import re
 import secrets
+import shlex
 import shutil
 import signal
+import socket
 import subprocess
-import tempfile
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Iterator
+from typing import Any, Iterator, Literal, TypedDict, cast
 
 from . import paths
 from .config import ToolConfig
-from .util import proc_alive, proc_group_alive, proc_starttime
+from .storage import atomic_write_text, exclusive_file_lock
+from .util import proc_alive, proc_group_alive, proc_starttime, strip_ansi
 
-if os.name == "nt":
-    import msvcrt
-else:
-    import fcntl
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
 
 
 class ProcessError(RuntimeError):
     pass
 
 
+ProcessLifecycle = Literal["running", "stopping", "stopped", "exited"]
+ToolLifecycle = Literal["starting", "running", "unready", "stopping", "stopped", "exited"]
+
+
+class ProcessState(TypedDict, total=False):
+    pid: int
+    pgid: int
+    starttime: int | None
+    started_at: float
+    exited_at: float
+    exit_code: int | None
+    leader_exit_code: int
+    lifecycle: ProcessLifecycle
+    run_id: str
+    group_validated: bool
+    stop_deadline: float
+    stop_signal: str
+    message: str
+    readiness_state: Literal["starting", "ready", "unready"]
+    readiness_mode: Literal["auto", "process", "http", "tcp"]
+    readiness_grace_at: float
+    readiness_deadline: float
+    readiness_url: str
+    readiness_port: int
+    readiness_log_offset: int
+    readiness_message: str
+    ready_at: float
+    next_probe_at: float
+
+
 @dataclass(frozen=True, slots=True)
 class ToolStatus:
     id: str
-    state: str
+    state: ToolLifecycle
     pid: int | None = None
     started_at: float | None = None
     exited_at: float | None = None
     exit_code: int | None = None
     message: str | None = None
+    ready_url: str | None = None
 
     @property
     def active(self) -> bool:
-        return self.state in {"running", "stopping"}
+        return self.state in {"starting", "running", "unready", "stopping"}
 
     @property
     def uptime(self) -> float | None:
@@ -51,6 +89,9 @@ class ToolStatus:
 
 
 class ProcManager:
+    _AUTO_URL_DISCOVERY_SECONDS = 1.0
+    _LOCAL_URL = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
+
     def __init__(self, *, max_log_bytes: int = 50 * 1024 * 1024) -> None:
         self.max_log_bytes = max_log_bytes
         self._children: dict[str, tuple[subprocess.Popen[bytes], str]] = {}
@@ -62,52 +103,36 @@ class ProcManager:
 
     @contextmanager
     def _lock(self, tool_id: str) -> Iterator[None]:
-        lock_path = paths.run_dir() / f"{tool_id}.lock"
-        with lock_path.open("a+b") as handle:
-            if os.name == "nt":
-                handle.seek(0, os.SEEK_END)
-                if handle.tell() == 0:
-                    handle.write(b"\0")
-                    handle.flush()
-                handle.seek(0)
-                msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
-            else:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                if os.name == "nt":
-                    handle.seek(0)
-                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-                else:
-                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        with exclusive_file_lock(paths.run_dir() / f"{tool_id}.lock"):
+            yield
 
     @staticmethod
-    def _read_state(tool_id: str) -> dict[str, Any] | None:
+    def _read_state(tool_id: str) -> ProcessState | None:
         try:
             with paths.state_json(tool_id).open("r", encoding="utf-8") as handle:
                 state = json.load(handle)
         except (FileNotFoundError, OSError, json.JSONDecodeError):
             return None
-        return state if isinstance(state, dict) else None
+        return cast(ProcessState, state) if isinstance(state, dict) else None
 
     @staticmethod
-    def _write_state(tool_id: str, state: dict[str, Any]) -> None:
+    def _write_state(tool_id: str, state: ProcessState) -> None:
         paths.ensure_dirs()
-        destination = paths.state_json(tool_id)
-        fd, temporary = tempfile.mkstemp(prefix=f".{tool_id}.", suffix=".tmp", dir=destination.parent)
-        try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(state, handle, ensure_ascii=False, indent=2, sort_keys=True)
-                handle.write("\n")
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(temporary, destination)
-        finally:
-            try:
-                os.unlink(temporary)
-            except FileNotFoundError:
-                pass
+        payload = json.dumps(state, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+        atomic_write_text(paths.state_json(tool_id), payload)
+
+    @staticmethod
+    def _state_has_identity(state: ProcessState | None) -> bool:
+        if state is None:
+            return False
+        pid = state.get("pid")
+        lifecycle = state.get("lifecycle", "running")
+        return (
+            isinstance(pid, int)
+            and not isinstance(pid, bool)
+            and pid > (0 if os.name == "nt" else 1)
+            and lifecycle in {"running", "stopping", "stopped", "exited"}
+        )
 
     @classmethod
     def _marker(cls, event: str, detail: str = "") -> bytes:
@@ -139,6 +164,186 @@ class ProcManager:
         except FileNotFoundError:
             pass
         log_path.replace(rotated)
+
+    @staticmethod
+    def _log_tail(
+        tool_id: str,
+        *,
+        max_bytes: int = 16 * 1024,
+        max_lines: int = 20,
+        start_offset: int | None = 0,
+    ) -> str:
+        try:
+            with paths.log_file(tool_id).open("rb") as handle:
+                handle.seek(0, os.SEEK_END)
+                size = handle.tell()
+                selected_offset = start_offset if isinstance(start_offset, int) and 0 <= start_offset <= size else 0
+                handle.seek(max(selected_offset, size - max_bytes))
+                payload = handle.read()
+        except OSError:
+            return ""
+        if start_offset is None:
+            marker_at = payload.rfind(b"LATTICE START ")
+            if marker_at >= 0:
+                payload = payload[marker_at:]
+        text = payload.decode("utf-8", errors="replace")
+        return "\n".join(text.splitlines()[-max_lines:]).strip()
+
+    @classmethod
+    def _detected_local_url(cls, tool_id: str, start_offset: int | None = 0) -> str:
+        matches = cls._LOCAL_URL.findall(
+            strip_ansi(
+                cls._log_tail(
+                    tool_id,
+                    max_bytes=64 * 1024,
+                    max_lines=200,
+                    start_offset=start_offset,
+                )
+            )
+        )
+        for match in reversed(matches):
+            selected = cls._normalized_local_url(match.rstrip(".,;:)"))
+            if selected:
+                return selected
+        return ""
+
+    @staticmethod
+    def _normalized_local_url(value: str) -> str:
+        try:
+            parsed = urllib.parse.urlsplit(value)
+        except ValueError:
+            return ""
+        if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+            return ""
+        try:
+            port = parsed.port
+        except ValueError:
+            return ""
+        host = (parsed.hostname or "").casefold()
+        if host == "0.0.0.0":
+            normalized_host = "127.0.0.1"
+        elif host == "localhost":
+            normalized_host = "127.0.0.1"
+        else:
+            try:
+                address = ipaddress.ip_address(host)
+            except ValueError:
+                return ""
+            if not address.is_loopback:
+                return ""
+            normalized_host = f"[{address.compressed}]" if address.version == 6 else address.compressed
+        netloc = normalized_host + (f":{port}" if port is not None else "")
+        return urllib.parse.urlunsplit((parsed.scheme, netloc, parsed.path, parsed.query, parsed.fragment))
+
+    @staticmethod
+    def _probe_http(url: str) -> bool:
+        selected = ProcManager._normalized_local_url(url)
+        if not selected:
+            return False
+        request = urllib.request.Request(selected, headers={"User-Agent": "ToolDeck-readiness/1"})
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+        try:
+            with opener.open(request, timeout=0.35) as response:
+                return 100 <= int(response.status) < 500
+        except urllib.error.HTTPError as exc:
+            return 100 <= exc.code < 500
+        except (OSError, ValueError, urllib.error.URLError):
+            return False
+
+    @staticmethod
+    def _probe_tcp(port: int) -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+                return True
+        except OSError:
+            return False
+
+    def _update_readiness(self, tool_id: str, state: ProcessState) -> ProcessState:
+        readiness = state.get("readiness_state")
+        if readiness not in {"starting", "unready"}:
+            return state
+        now = time.time()
+        next_probe = state.get("next_probe_at")
+        if isinstance(next_probe, (int, float)) and now < next_probe:
+            return state
+        mode = state.get("readiness_mode", "auto")
+        url = state.get("readiness_url", "")
+        port = state.get("readiness_port")
+        detected_url = False
+        if mode == "auto" and not url and not isinstance(port, int):
+            log_offset = state.get("readiness_log_offset")
+            url = self._detected_local_url(
+                tool_id,
+                log_offset if isinstance(log_offset, int) and not isinstance(log_offset, bool) else None,
+            )
+            if url:
+                state["readiness_url"] = url
+                detected_url = True
+            else:
+                grace_at = state.get("readiness_grace_at")
+                started_at = state.get("started_at")
+                discovery_at = max(
+                    float(grace_at) if isinstance(grace_at, (int, float)) else now,
+                    (
+                        float(started_at) + self._AUTO_URL_DISCOVERY_SECONDS
+                        if isinstance(started_at, (int, float))
+                        else now
+                    ),
+                )
+                if now < discovery_at:
+                    state["next_probe_at"] = now + min(0.25, max(0.05, discovery_at - now))
+                    self._write_state(tool_id, state)
+                    return state
+                state.update(readiness_state="ready", ready_at=now, readiness_message="进程已稳定运行")
+                state.pop("next_probe_at", None)
+                self._append_marker(tool_id, "READY", "mode=process")
+                self._write_state(tool_id, state)
+                return state
+
+        grace_at = state.get("readiness_grace_at")
+        if isinstance(grace_at, (int, float)) and now < grace_at:
+            if detected_url:
+                state["next_probe_at"] = float(grace_at)
+                self._write_state(tool_id, state)
+            return state
+
+        ready = False
+        detail = ""
+        if mode == "process":
+            ready = True
+            detail = "mode=process"
+        elif mode == "http" and url:
+            ready = self._probe_http(url)
+            detail = f"url={url}"
+        elif mode == "tcp" and isinstance(port, int):
+            ready = self._probe_tcp(port)
+            detail = f"port={port}"
+        elif mode == "auto" and url:
+            ready = self._probe_http(url)
+            detail = f"url={url}"
+        elif mode == "auto" and isinstance(port, int):
+            ready = self._probe_tcp(port)
+            detail = f"port={port}"
+        if ready:
+            state.update(readiness_state="ready", ready_at=now, readiness_message="已就绪")
+            state.pop("next_probe_at", None)
+            self._append_marker(tool_id, "READY", detail)
+            self._write_state(tool_id, state)
+            return state
+
+        deadline = state.get("readiness_deadline")
+        if isinstance(deadline, (int, float)) and now >= deadline:
+            message = "启动探测超时，进程仍在运行并将继续探测"
+            changed = state.get("readiness_state") != "unready" or state.get("readiness_message") != message
+            state.update(readiness_state="unready", readiness_message=message, next_probe_at=now + 5.0)
+            if changed:
+                self._append_marker(tool_id, "READINESS-TIMEOUT")
+                self._write_state(tool_id, state)
+        else:
+            until_deadline = float(deadline) - now if isinstance(deadline, (int, float)) else 0.75
+            state["next_probe_at"] = now + min(0.75, max(0.05, until_deadline))
+            self._write_state(tool_id, state)
+        return state
 
     @staticmethod
     def _resolve_shell(shell: str) -> str:
@@ -200,7 +405,7 @@ class ProcManager:
             raise ProcessError(f"Windows 无法{action} PID {pid} 的进程树")
         return False
 
-    def _finish_child(self, tool_id: str, state: dict[str, Any]) -> dict[str, Any]:
+    def _finish_child(self, tool_id: str, state: ProcessState) -> ProcessState:
         owned = self._children.get(tool_id)
         if owned is None:
             return state
@@ -232,9 +437,55 @@ class ProcManager:
         except (ProcessLookupError, PermissionError, OSError):
             return False
 
+    @classmethod
+    def _rollback_started_child(cls, child: subprocess.Popen[bytes]) -> str | None:
+        """Terminate an untracked process tree after startup persistence fails."""
+
+        failures: list[str] = []
+        if os.name == "nt":
+            try:
+                cls._taskkill_tree(child.pid, force=True)
+            except (OSError, ProcessError) as exc:
+                failures.append(str(exc))
+        else:
+            try:
+                os.killpg(child.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            except (PermissionError, OSError) as exc:
+                failures.append(f"SIGTERM: {exc}")
+
+            try:
+                child.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                pass
+            if proc_group_alive(child.pid):
+                try:
+                    os.killpg(child.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                except (PermissionError, OSError) as exc:
+                    failures.append(f"SIGKILL: {exc}")
+
+        if child.poll() is None:
+            try:
+                child.kill()
+            except OSError as exc:
+                failures.append(f"kill: {exc}")
+        try:
+            child.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            failures.append(f"PID {child.pid} 未退出")
+        if os.name != "nt" and proc_group_alive(child.pid):
+            failures.append(f"进程组 {child.pid} 仍存活")
+        return "；".join(failures) or None
+
     def status(self, tool_id: str) -> ToolStatus:
         with self._lock(tool_id):
-            return self._status_unlocked(tool_id)
+            try:
+                return self._status_unlocked(tool_id)
+            except OSError as exc:
+                raise ProcessError(f"无法同步 {tool_id} 的运行状态：{exc}") from exc
 
     def _status_unlocked(self, tool_id: str) -> ToolStatus:
         state = self._read_state(tool_id)
@@ -275,14 +526,43 @@ class ProcManager:
         if not leader_alive and not group_alive and tool_id in self._children:
             state = self._finish_child(tool_id, state)
             if tool_id in self._children:
-                current = "stopping" if lifecycle == "stopping" else "running"
+                current: ToolLifecycle
+                if lifecycle == "stopping":
+                    current = "stopping"
+                elif state.get("readiness_state") == "starting":
+                    current = "starting"
+                elif state.get("readiness_state") == "unready":
+                    current = "unready"
+                else:
+                    current = "running"
                 return ToolStatus(tool_id, current, pid=pid, started_at=started_at)
             lifecycle = state.get("lifecycle", lifecycle)
             group_alive = proc_group_alive(pgid) if group_validated and isinstance(pgid, int) else False
 
         if lifecycle in {"running", "stopping"} and (leader_alive or group_alive):
-            current = "stopping" if lifecycle == "stopping" else "running"
-            return ToolStatus(tool_id, current, pid=pid, started_at=started_at)
+            if lifecycle == "stopping":
+                current = "stopping"
+            else:
+                if state.get("readiness_state") not in {"starting", "ready", "unready"}:
+                    state.update(
+                        readiness_state="ready",
+                        readiness_mode="process",
+                        ready_at=time.time(),
+                        readiness_message="进程运行中",
+                    )
+                    self._write_state(tool_id, state)
+                state = self._update_readiness(tool_id, state)
+                readiness_state = state.get("readiness_state")
+                current = "starting" if readiness_state == "starting" else "unready" if readiness_state == "unready" else "running"
+            message = state.get("readiness_message") or state.get("message")
+            return ToolStatus(
+                tool_id,
+                current,
+                pid=pid,
+                started_at=started_at,
+                message=message if isinstance(message, str) else None,
+                ready_url=state.get("readiness_url") if isinstance(state.get("readiness_url"), str) else None,
+            )
 
         if lifecycle in {"running", "stopping"}:
             lifecycle = "stopped" if lifecycle == "stopping" else "exited"
@@ -294,6 +574,10 @@ class ProcManager:
             )
             state.pop("stop_deadline", None)
             state.pop("group_validated", None)
+            if lifecycle == "exited" and state.get("readiness_state") != "ready":
+                code_text = str(leader_code) if isinstance(leader_code, int) else "unknown"
+                tail = self._log_tail(tool_id)
+                state["message"] = f"启动期间退出，退出码 {code_text}" + (f"\n\n{tail}" if tail else "")
             self._write_state(tool_id, state)
             detail = f"code={leader_code}" if isinstance(leader_code, int) else "code=unknown"
             self._append_marker(tool_id, "STOPPED" if lifecycle == "stopped" else "EXIT", detail)
@@ -310,17 +594,33 @@ class ProcManager:
 
     def start(self, tool: ToolConfig) -> ToolStatus:
         with self._lock(tool.id):
-            current = self._status_unlocked(tool.id)
+            state_path = paths.state_json(tool.id)
+            if state_path.exists() and not self._state_has_identity(self._read_state(tool.id)):
+                raise ProcessError(
+                    f"{tool.name} 的运行状态文件损坏，已拒绝重复启动：{state_path}"
+                )
+            try:
+                current = self._status_unlocked(tool.id)
+            except OSError as exc:
+                raise ProcessError(f"无法同步 {tool.name} 的运行状态：{exc}") from exc
             if current.active:
                 raise ProcessError(f"{tool.name} 已在运行（PID {current.pid}）")
             cwd = Path(tool.cwd).expanduser()
             if not cwd.is_dir():
                 raise ProcessError(f"工作目录不存在：{cwd}")
-            shell = self._resolve_shell(tool.shell)
+            if tool.launch is None:
+                shell = self._resolve_shell(tool.shell)
+                launch_args, launch_options = self._launch_spec(shell, tool.cmd)
+            else:
+                if not tool.launch.argv:
+                    raise ProcessError("结构化启动参数不能为空")
+                launch_args = list(tool.launch.argv)
+                launch_options = {}
             try:
                 self._rotate_log(tool.id)
                 paths.logs_dir().mkdir(parents=True, exist_ok=True)
                 log_path = paths.log_file(tool.id)
+                readiness_log_offset = 0
                 with log_path.open("ab", buffering=0) as output:
                     output.write(self._marker("START", f"name={tool.name}"))
                     platform_options: dict[str, Any]
@@ -333,8 +633,16 @@ class ProcManager:
                         }
                     else:
                         platform_options = {"start_new_session": True}
-                    launch_args, launch_options = self._launch_spec(shell, tool.cmd)
                     platform_options.update(launch_options)
+                    display_command = (
+                        subprocess.list2cmdline(launch_args)
+                        if isinstance(launch_args, list) and os.name == "nt"
+                        else shlex.join(launch_args)
+                        if isinstance(launch_args, list)
+                        else tool.cmd
+                    )
+                    output.write(self._marker("COMMAND", display_command))
+                    readiness_log_offset = output.tell()
                     child = subprocess.Popen(
                         launch_args,
                         cwd=cwd,
@@ -351,18 +659,38 @@ class ProcManager:
             starttime = proc_starttime(child.pid)
             group_validated = self._posix_group_matches(child.pid, child.pid, starttime)
             run_id = secrets.token_hex(16)
-            state: dict[str, Any] = {
+            state: ProcessState = {
                 "pid": child.pid,
                 "pgid": child.pid,
                 "starttime": starttime,
                 "started_at": started_at,
                 "lifecycle": "running",
                 "run_id": run_id,
+                "readiness_state": "starting",
+                "readiness_mode": tool.readiness.mode,
+                "readiness_grace_at": started_at + tool.readiness.grace_seconds,
+                "readiness_deadline": started_at + tool.readiness.timeout_seconds,
+                "readiness_log_offset": readiness_log_offset,
+                "readiness_message": "正在等待启动就绪",
             }
+            if tool.readiness.health_url:
+                state["readiness_url"] = self._normalized_local_url(tool.readiness.health_url)
+            if tool.readiness.health_port is not None:
+                state["readiness_port"] = tool.readiness.health_port
             if group_validated:
                 state["group_validated"] = True
+            try:
+                self._write_state(tool.id, state)
+            except OSError as exc:
+                rollback_error = self._rollback_started_child(child)
+                self._children.pop(tool.id, None)
+                detail = f"state={exc} rollback={'failed: ' + rollback_error if rollback_error else 'complete'}"
+                self._append_marker(tool.id, "START-ROLLBACK", detail)
+                message = f"启动状态无法保存，已回滚新进程：{exc}"
+                if rollback_error:
+                    message += f"；进程树回滚异常：{rollback_error}"
+                raise ProcessError(message) from exc
             self._children[tool.id] = (child, run_id)
-            self._write_state(tool.id, state)
             return self._status_unlocked(tool.id)
 
     @staticmethod
@@ -371,7 +699,10 @@ class ProcManager:
 
     def stop_begin(self, tool: ToolConfig) -> ToolStatus:
         with self._lock(tool.id):
-            current = self._status_unlocked(tool.id)
+            try:
+                current = self._status_unlocked(tool.id)
+            except OSError as exc:
+                raise ProcessError(f"无法同步 {tool.name} 的运行状态：{exc}") from exc
             if not current.active:
                 return current
             state = self._read_state(tool.id)
@@ -391,7 +722,10 @@ class ProcManager:
             state["stop_signal"] = tool.stop_signal
             if os.name == "nt":
                 state["group_validated"] = True
-            self._write_state(tool.id, state)
+            try:
+                self._write_state(tool.id, state)
+            except OSError as exc:
+                raise ProcessError(f"无法保存 {tool.name} 的停止状态：{exc}") from exc
             try:
                 if os.name == "nt":
                     self._taskkill_tree(signal_target, force=tool.stop_signal == "KILL")
@@ -399,13 +733,18 @@ class ProcManager:
                     os.killpg(signal_target, self._signal_number(tool.stop_signal))
             except ProcessLookupError:
                 pass
-            except (PermissionError, ProcessError) as exc:
+            except (PermissionError, ProcessError, OSError) as exc:
                 state["lifecycle"] = "running"
                 state.pop("stop_deadline", None)
-                self._write_state(tool.id, state)
+                try:
+                    self._write_state(tool.id, state)
+                except OSError as rollback_exc:
+                    raise ProcessError(
+                        f"停止信号失败且运行状态无法回滚：{exc}；回滚错误：{rollback_exc}"
+                    ) from exc
                 if isinstance(exc, ProcessError):
                     raise
-                raise ProcessError(f"无权停止 PID {signal_target}") from exc
+                raise ProcessError(f"无法停止 PID {signal_target}：{exc}") from exc
             detail = "taskkill=/T" if os.name == "nt" else f"pgid={signal_target} signal=SIG{tool.stop_signal}"
             self._append_marker(tool.id, "STOP", detail)
             return self._status_unlocked(tool.id)
@@ -439,8 +778,8 @@ class ProcManager:
                         self._append_marker(tool_id, "KILL", f"pgid={signal_target} signal=SIGKILL timeout=expired")
                 except ProcessLookupError:
                     pass
-                except (PermissionError, ProcessError):
-                    state["message"] = f"无权强制停止 PID {signal_target}"
+                except (PermissionError, ProcessError, OSError) as exc:
+                    state["message"] = f"无法强制停止 PID {signal_target}：{exc}"
                 state["stop_deadline"] = time.time() + 1.0
                 self._write_state(tool_id, state)
                 self._status_unlocked(tool_id)

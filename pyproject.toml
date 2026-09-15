@@ -27,6 +27,7 @@ tooldeck-gui = "tooldeck.gui.app:run_gui"
 where = ["src"]
 
 [tool.setuptools.package-data]
+"tooldeck" = ["theme_packs/*.json"]
 "tooldeck.gui" = [
     "assets/*.svg",
     "assets/*.ico",

@@ -1,0 +1,15 @@
+# DeepSeek Harness（DSH）Web 控制台；默认监听 http://127.0.0.1:3080。
+name = "DSH"
+group = "开发工具"
+cmd = "dsh web"
+cwd = "~"
+shell = "/bin/bash"
+autostart = false
+stop_signal = "TERM"
+stop_timeout = 15
+
+[readiness]
+mode = "http"
+health_url = "http://127.0.0.1:3080"
+grace_seconds = 2
+timeout_seconds = 120

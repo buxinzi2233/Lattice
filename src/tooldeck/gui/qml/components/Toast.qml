@@ -15,12 +15,13 @@ Rectangle {
 
     width: Math.min(520, Math.max(280, toastText.implicitWidth + 54))
     height: 44
-    radius: 2
+    radius: Theme.radiusSmall
     color: Theme.ink
-    border.width: 1
+    border.width: Theme.lineWidth
     border.color: kind === "warning" ? Theme.warning : kind === "error" ? Theme.danger : Theme.telemetry
     opacity: 0
     visible: opacity > 0
+    transform: Translate { id: toastMotion; y: 0 }
 
     Rectangle {
         anchors.left: parent.left
@@ -46,12 +47,15 @@ Rectangle {
 
     SequentialAnimation {
         id: reveal
-        PropertyAction { target: toast; property: "visible"; value: true }
+        objectName: "toastRevealAnimation"
         ParallelAnimation {
-            NumberAnimation { target: toast; property: "opacity"; from: 0; to: 1; duration: Theme.normal }
-            NumberAnimation { target: toast; property: "y"; from: toast.parent ? toast.parent.height - 54 : 0; to: toast.parent ? toast.parent.height - 72 : 0; duration: Theme.normal; easing.type: Easing.OutCubic }
+            NumberAnimation { target: toast; property: "opacity"; from: 0; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
+            NumberAnimation { target: toastMotion; property: "y"; from: 10; to: 0; duration: Theme.normal; easing.type: Theme.easeEnter }
         }
         PauseAnimation { duration: 3400 }
-        NumberAnimation { target: toast; property: "opacity"; to: 0; duration: Theme.normal }
+        ParallelAnimation {
+            NumberAnimation { target: toast; property: "opacity"; to: 0; duration: Theme.normal; easing.type: Theme.easeExit }
+            NumberAnimation { target: toastMotion; property: "y"; to: -4; duration: Theme.normal; easing.type: Theme.easeExit }
+        }
     }
 }

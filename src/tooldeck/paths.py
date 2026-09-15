@@ -53,8 +53,28 @@ def logs_dir() -> Path:
     return state_dir() / "logs"
 
 
+def setup_logs_dir() -> Path:
+    return state_dir() / "setup"
+
+
+def setup_state_dir() -> Path:
+    return state_dir() / "setup-state"
+
+
 def layout_json() -> Path:
     return config_dir() / "layout.json"
+
+
+def themes_dir() -> Path:
+    return config_dir() / "themes.d"
+
+
+def catalog_journal_json() -> Path:
+    return config_dir() / ".catalog-transaction.json"
+
+
+def catalog_lock_file() -> Path:
+    return config_dir() / ".catalog.lock"
 
 
 def startup_cache_dir() -> Path:
@@ -66,7 +86,7 @@ def startup_state_json() -> Path:
 
 
 def ensure_dirs() -> None:
-    for d in (tools_dir(), run_dir(), logs_dir()):
+    for d in (tools_dir(), themes_dir(), run_dir(), logs_dir(), setup_logs_dir(), setup_state_dir()):
         d.mkdir(parents=True, exist_ok=True)
 
 

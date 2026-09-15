@@ -9,6 +9,8 @@ from PySide6.QtQml import QQmlApplicationEngine
 from PySide6.QtQuickControls2 import QQuickStyle
 from PySide6.QtWidgets import QApplication
 
+from tooldeck.application import ToolDeckApplication
+
 from .bridge import AppBridge
 from .tray import create_tray
 
@@ -32,8 +34,14 @@ def register_fonts() -> None:
             QFontDatabase.addApplicationFont(str(font))
 
 
-def create_engine(bridge: AppBridge | None = None) -> tuple[QQmlApplicationEngine, AppBridge]:
-    selected_bridge = bridge or AppBridge()
+def create_engine(
+    bridge: AppBridge | None = None,
+    *,
+    application: ToolDeckApplication | None = None,
+) -> tuple[QQmlApplicationEngine, AppBridge]:
+    if bridge is not None and application is not None:
+        raise ValueError("bridge 与 application 不能同时传入")
+    selected_bridge = bridge or AppBridge(application=application)
     engine = QQmlApplicationEngine()
     engine.addImportPath(str(qml_path().parent))
     engine.rootContext().setContextProperty("AppBridge", selected_bridge)
@@ -41,7 +49,7 @@ def create_engine(bridge: AppBridge | None = None) -> tuple[QQmlApplicationEngin
     return engine, selected_bridge
 
 
-def run_gui() -> int:
+def run_gui(application: ToolDeckApplication | None = None) -> int:
     app = QApplication.instance() or QApplication(sys.argv)
     app.setApplicationName("Lattice")
     app.setApplicationDisplayName("Lattice 晶格中枢")
@@ -52,7 +60,7 @@ def run_gui() -> int:
     register_fonts()
     QQuickStyle.setStyle("Basic")
 
-    bridge = AppBridge()
+    bridge = AppBridge(application=application)
     bridge.setStartupAutoLaunch(True)
     engine, bridge = create_engine(bridge)
     if not engine.rootObjects():
@@ -73,6 +81,12 @@ def run_gui() -> int:
     exit_code = app.exec()
     bridge.shutdown()
     return exit_code
+
+
+def run_frontend(application: ToolDeckApplication) -> int:
+    """Built-in entry point implementing the generic frontend contract."""
+
+    return run_gui(application)
 
 
 if __name__ == "__main__":
