@@ -9,7 +9,10 @@ Item {
     property string valueText: "--"
     property string detailText: ""
     property real percent: -1
+    property real displayedPercent: Math.max(0, Math.min(100, percent < 0 ? 0 : percent))
     readonly property bool compact: width < Theme.sp(110)
+
+    Behavior on displayedPercent { NumberAnimation { duration: Theme.slow; easing.type: Theme.easeStandard } }
 
     implicitWidth: 170
     implicitHeight: 72
@@ -46,6 +49,7 @@ Item {
             }
 
             Text {
+                id: metricValue
                 text: control.valueText
                 color: control.percent >= 0 ? Theme.text : Theme.faint
                 font.family: Theme.mono
@@ -58,6 +62,7 @@ Item {
                 elide: Text.ElideRight
                 Layout.fillWidth: true
                 Layout.minimumWidth: 24
+                onTextChanged: valuePulse.restart()
             }
         }
 
@@ -77,11 +82,14 @@ Item {
 
             Rectangle {
                 height: parent.height
-                width: control.percent < 0 ? 0 : parent.width * Math.max(0, Math.min(100, control.percent)) / 100
+                width: control.percent < 0 ? 0 : parent.width * control.displayedPercent / 100
                 color: control.percent > 90 ? Theme.warning : Theme.telemetry
-
-                Behavior on width { NumberAnimation { duration: Theme.slow; easing.type: Easing.OutCubic } }
             }
         }
+    }
+
+    SequentialAnimation {
+        id: valuePulse
+        NumberAnimation { target: metricValue; property: "opacity"; from: 0.58; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
     }
 }

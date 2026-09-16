@@ -1,24 +1,28 @@
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import os
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
-from . import paths
-from .config import ConfigError, ToolConfig, default_shell, delete, load_all, save
-from .procs import ProcManager, ProcessError
+from .application import ToolDeckApplication
+from .catalog import CatalogError
+from .config import ConfigError, ToolConfig, default_shell
+from .drafts import parse_env_assignments
+from .frontends import FrontendError, discover_frontends, run_frontend
+from .groups import display_group_name
+from .procs import ProcessError, ToolStatus
 from .util import disp_width, fmt_duration, pad
 from .tailer import LogTailer, tail_bytes
 
 
-def _tools_or_report() -> dict[str, ToolConfig]:
-    tools, issues = load_all()
-    for issue in issues:
+def _tools_or_report(application: ToolDeckApplication) -> dict[str, ToolConfig]:
+    snapshot = application.refresh_catalog()
+    for issue in snapshot.issues:
         print(f"警告：{issue.path.name}: {issue.message}", file=sys.stderr)
-    return tools
+    return snapshot.tools
 
 
 def _find(tools: dict[str, ToolConfig], tool_id: str) -> ToolConfig:
@@ -29,20 +33,18 @@ def _find(tools: dict[str, ToolConfig], tool_id: str) -> ToolConfig:
 
 
 def _parse_env(values: list[str] | None) -> dict[str, str]:
-    result: dict[str, str] = {}
-    for item in values or []:
-        if "=" not in item:
-            raise ConfigError(f"环境变量必须使用 KEY=VALUE 格式：{item}")
-        key, value = item.split("=", 1)
-        if not key:
-            raise ConfigError("环境变量名不能为空")
-        result[key] = value
-    return result
+    return parse_env_assignments(values or ())
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tooldeck", description="本地工具总控台")
+    parser.add_argument(
+        "--frontend",
+        default=os.environ.get("TOOLDECK_FRONTEND", "qml"),
+        help="无子命令时启动的前端（默认：qml）",
+    )
     sub = parser.add_subparsers(dest="action")
+    sub.add_parser("frontends", help="列出可用前端适配器")
     sub.add_parser("list", help="列出工具及状态")
 
     for name in ("start", "stop", "restart"):
@@ -86,17 +88,28 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _print_list(manager: ProcManager, tools: dict[str, ToolConfig]) -> None:
+def _print_list(
+    tools: dict[str, ToolConfig],
+    statuses: dict[str, ToolStatus],
+) -> None:
     headers = ("ID", "名称", "分组", "状态", "PID", "运行时间")
     rows: list[tuple[str, ...]] = []
-    state_names = {"running": "运行中", "stopping": "停止中", "stopped": "已停止", "exited": "已退出"}
+    state_names = {
+        "starting": "正在启动",
+        "running": "运行中",
+        "unready": "启动超时",
+        "error": "状态异常",
+        "stopping": "停止中",
+        "stopped": "已停止",
+        "exited": "已退出",
+    }
     for tool in tools.values():
-        status = manager.status(tool.id)
+        status = statuses.get(tool.id, ToolStatus(tool.id, "stopped"))
         rows.append(
             (
                 tool.id,
                 tool.name,
-                tool.group or "未分组",
+                display_group_name(tool.group),
                 state_names[status.state],
                 str(status.pid or "-"),
                 fmt_duration(status.uptime),
@@ -112,8 +125,7 @@ def _tail_lines(path: Path, count: int) -> bytes:
     return tail_bytes(path, count)
 
 
-def _show_logs(tool_id: str, lines: int, follow: bool) -> None:
-    log_path = paths.log_file(tool_id)
+def _show_logs(log_path: Path, lines: int, follow: bool) -> None:
     tailer = LogTailer(log_path)
     end = tailer.seek_lines(lines)
     while tailer.offset < end:
@@ -140,28 +152,40 @@ def _show_logs(tool_id: str, lines: int, follow: bool) -> None:
 def main(argv: list[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     if args.action is None:
-        from .gui.app import run_gui
-
-        return run_gui()
+        try:
+            return run_frontend(args.frontend)
+        except FrontendError as exc:
+            print(f"错误：{exc}", file=sys.stderr)
+            return 1
+    if args.action == "frontends":
+        for spec in discover_frontends():
+            print(f"{spec.id}\t{spec.name}\t{spec.source}")
+        return 0
     try:
-        tools = _tools_or_report()
-        manager = ProcManager()
+        application = ToolDeckApplication()
+        tools = _tools_or_report(application)
         if args.action == "list":
-            _print_list(manager, tools)
+            runtime = application.inspect_statuses(tools)
+            for issue in runtime.issues:
+                print(f"警告：{issue.tool_name}: {issue.message}", file=sys.stderr)
+            _print_list(tools, runtime.statuses)
         elif args.action == "start":
-            status = manager.start(_find(tools, args.id))
-            print(f"已启动 {args.id}（PID {status.pid}）")
+            _find(tools, args.id)
+            status = application.start(args.id)
+            message = "已就绪" if status.state == "running" else "正在启动"
+            print(f"{message} {args.id}（PID {status.pid}）")
         elif args.action == "stop":
-            manager.stop_blocking(_find(tools, args.id))
+            _find(tools, args.id)
+            application.stop_blocking(args.id)
             print(f"已停止 {args.id}")
         elif args.action == "restart":
-            tool = _find(tools, args.id)
-            manager.stop_blocking(tool)
-            status = manager.start(tool)
-            print(f"已重启 {args.id}（PID {status.pid}）")
+            _find(tools, args.id)
+            status = application.restart_blocking(args.id)
+            message = "已重新就绪" if status.state == "running" else "正在重新启动"
+            print(f"{message} {args.id}（PID {status.pid}）")
         elif args.action == "logs":
             _find(tools, args.id)
-            _show_logs(args.id, args.lines, args.follow)
+            _show_logs(application.log_path(args.id), args.lines, args.follow)
         elif args.action == "add":
             tool = ToolConfig(
                 id=args.id,
@@ -175,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
                 stop_signal=args.stop_signal,
                 stop_timeout=args.stop_timeout,
             )
-            save(tool, overwrite=False)
+            application.save_tool(tool, overwrite=False)
             print(f"已添加 {tool.id}")
         elif args.action == "edit":
             old = _find(tools, args.id)
@@ -196,18 +220,17 @@ def main(argv: list[str] | None = None) -> int:
                 changes["env"] = _parse_env(args.env)
             if args.autostart is not None:
                 changes["autostart"] = args.autostart == "true"
-            save(dataclasses.replace(old, **changes))
+            if args.cmd is not None:
+                changes["launch"] = None
+            application.save_tool(replace(old, **changes))
             print(f"已更新 {old.id}")
         elif args.action == "remove":
             tool = _find(tools, args.id)
-            if manager.status(tool.id).active:
-                raise ProcessError("工具仍在运行，请先停止")
-            delete(tool.id)
+            application.delete_tool(tool.id)
             print(f"已删除 {tool.id}")
         elif args.action == "path":
-            selected = {"config": paths.config_dir(), "state": paths.state_dir(), "logs": paths.logs_dir()}[args.kind]
-            print(selected)
-    except (ConfigError, ProcessError, OSError) as exc:
+            print(application.data_path(args.kind))
+    except (CatalogError, ConfigError, FrontendError, ProcessError, OSError) as exc:
         print(f"错误：{exc}", file=sys.stderr)
         return 1
     return 0

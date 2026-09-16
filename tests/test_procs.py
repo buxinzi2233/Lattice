@@ -11,7 +11,7 @@ import time
 import pytest
 
 from tooldeck import paths
-from tooldeck.config import ToolConfig
+from tooldeck.config import ReadinessConfig, ToolConfig
 from tooldeck.procs import ProcManager, ProcessError
 from tooldeck.util import proc_alive, proc_starttime
 
@@ -42,11 +42,93 @@ def test_start_and_stop_sleep():
         stop_timeout=0.2,
     )
     running = manager.start(tool)
-    assert running.state == "running"
+    assert running.state == "starting"
     assert proc_alive(running.pid)
     stopped = manager.stop_blocking(tool)
     assert stopped.state == "stopped"
     assert not proc_alive(running.pid)
+
+
+def test_start_rolls_back_child_when_state_persistence_fails(monkeypatch):
+    manager = ProcManager()
+    children: list[subprocess.Popen] = []
+    real_popen = subprocess.Popen
+
+    def capture_child(*args, **kwargs):
+        child = real_popen(*args, **kwargs)
+        if "cwd" in kwargs:
+            children.append(child)
+        return child
+
+    def fail_state_write(_tool_id, _state):
+        raise OSError("state disk unavailable")
+
+    monkeypatch.setattr("tooldeck.procs.subprocess.Popen", capture_child)
+    monkeypatch.setattr(manager, "_write_state", fail_state_write)
+    tool = ToolConfig(
+        "state-write-failure",
+        "State write failure",
+        python_command("import time; time.sleep(60)"),
+        tempfile.gettempdir(),
+    )
+
+    with pytest.raises(ProcessError, match="启动状态无法保存"):
+        manager.start(tool)
+
+    assert len(children) == 1
+    assert children[0].poll() is not None
+    assert tool.id not in manager._children
+    assert not proc_alive(children[0].pid)
+    assert "START-ROLLBACK" in paths.log_file(tool.id).read_text(errors="replace")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process-group rollback semantics")
+def test_start_state_failure_rolls_back_spawned_descendants(monkeypatch):
+    manager = ProcManager()
+    descendant_pid: list[int] = []
+    child_code = "import time; time.sleep(60)"
+    parent_code = (
+        "import subprocess, sys, time; "
+        f"child = subprocess.Popen([sys.executable, '-c', {child_code!r}]); "
+        "print(child.pid, flush=True); time.sleep(60)"
+    )
+    tool = ToolConfig(
+        "state-tree-failure",
+        "State tree failure",
+        python_command(parent_code),
+        tempfile.gettempdir(),
+    )
+
+    def fail_after_descendant_started(_tool_id, _state):
+        deadline = time.time() + 2
+        while time.time() < deadline:
+            text = paths.log_file(tool.id).read_text(errors="replace")
+            found = next((int(line) for line in text.splitlines() if line.isdigit()), None)
+            if found is not None:
+                descendant_pid.append(found)
+                break
+            time.sleep(0.01)
+        raise OSError("state disk unavailable")
+
+    monkeypatch.setattr(manager, "_write_state", fail_after_descendant_started)
+    with pytest.raises(ProcessError, match="启动状态无法保存"):
+        manager.start(tool)
+
+    assert descendant_pid
+    assert not proc_alive(descendant_pid[0])
+
+
+def test_corrupt_state_file_blocks_a_potential_duplicate_start(monkeypatch):
+    manager = ProcManager()
+    tool = ToolConfig("corrupt-state", "Corrupt state", python_command("pass"), tempfile.gettempdir())
+    paths.state_json(tool.id).write_text("{not json", encoding="utf-8")
+    launched = []
+    monkeypatch.setattr("tooldeck.procs.subprocess.Popen", lambda *_args, **_kwargs: launched.append(True))
+
+    with pytest.raises(ProcessError, match="状态文件损坏.*拒绝重复启动"):
+        manager.start(tool)
+
+    assert launched == []
 
 
 def test_exit_code_is_recorded():
@@ -61,6 +143,159 @@ def test_exit_code_is_recorded():
     status = wait_for(manager, tool.id, {"exited"})
     assert status.exit_code == 3
     assert "code=3" in paths.log_file(tool.id).read_text(errors="replace")
+
+
+def test_process_readiness_moves_from_starting_to_running():
+    manager = ProcManager()
+    tool = ToolConfig(
+        "readiness-process",
+        "Readiness process",
+        python_command("import time; time.sleep(60)"),
+        tempfile.gettempdir(),
+        readiness=ReadinessConfig("process", 0.05, 2),
+        stop_timeout=0.1,
+    )
+    started = manager.start(tool)
+    try:
+        assert started.state in {"starting", "running"}
+        ready = wait_for(manager, tool.id, {"running"}, timeout=1)
+        assert ready.message == "已就绪"
+    finally:
+        manager.stop_blocking(tool)
+
+
+def test_quick_exit_reports_code_and_log_tail_without_ready_state():
+    manager = ProcManager()
+    tool = ToolConfig(
+        "startup-failure",
+        "Startup failure",
+        python_command("import sys; print('dependency missing', flush=True); sys.exit(7)"),
+        tempfile.gettempdir(),
+        readiness=ReadinessConfig("process", 1, 2),
+    )
+
+    started = manager.start(tool)
+    assert started.state in {"starting", "exited"}
+    exited = started if started.state == "exited" else wait_for(manager, tool.id, {"exited"})
+
+    assert exited.exit_code == 7
+    assert "退出码 7" in (exited.message or "")
+    assert "dependency missing" in (exited.message or "")
+
+
+def test_http_timeout_keeps_process_and_recovers_when_service_becomes_ready(monkeypatch):
+    port = 18765
+    probe_started = time.time()
+    monkeypatch.setattr(ProcManager, "_probe_http", staticmethod(lambda _url: time.time() - probe_started >= 0.35))
+    manager = ProcManager()
+    tool = ToolConfig(
+        "delayed-http",
+        "Delayed HTTP",
+        python_command("import time; time.sleep(60)"),
+        tempfile.gettempdir(),
+        readiness=ReadinessConfig("http", 0, 0.1, f"http://127.0.0.1:{port}/"),
+        stop_timeout=0.1,
+    )
+    manager.start(tool)
+    try:
+        timed_out = wait_for(manager, tool.id, {"unready"}, timeout=1)
+        assert timed_out.active
+        assert proc_alive(timed_out.pid)
+        ready = wait_for(manager, tool.id, {"running"}, timeout=7)
+        assert ready.active
+        assert ready.ready_url == f"http://127.0.0.1:{port}/"
+    finally:
+        manager.stop_blocking(tool)
+
+
+def test_auto_readiness_waits_for_late_log_url_before_process_fallback(monkeypatch):
+    detected_after = time.time() + 0.25
+    local_url = "http://127.0.0.1:18766/"
+    monkeypatch.setattr(
+        ProcManager,
+        "_detected_local_url",
+        staticmethod(lambda _tool_id, _offset=0: local_url if time.time() >= detected_after else ""),
+    )
+    monkeypatch.setattr(ProcManager, "_probe_http", staticmethod(lambda _url: True))
+    manager = ProcManager()
+    tool = ToolConfig(
+        "auto-late-url",
+        "Auto late URL",
+        python_command("import time; time.sleep(60)"),
+        tempfile.gettempdir(),
+        readiness=ReadinessConfig("auto", 0.05, 2),
+        stop_timeout=0.1,
+    )
+
+    manager.start(tool)
+    try:
+        time.sleep(0.12)
+        assert manager.status(tool.id).state == "starting"
+        ready = wait_for(manager, tool.id, {"running"}, timeout=2)
+        assert ready.ready_url == local_url
+    finally:
+        manager.stop_blocking(tool)
+
+
+def test_log_url_detection_ignores_remote_hosts_and_normalizes_bind_all(tmp_path):
+    manager = ProcManager()
+    paths.log_file("urls").write_text(
+        "remote https://example.com:8000\nlocal http://0.0.0.0:8188/ui\n",
+        encoding="utf-8",
+    )
+
+    assert manager._detected_local_url("urls") == "http://127.0.0.1:8188/ui"
+
+    paths.log_file("urls").write_text(
+        "lookalike http://localhost.evil.example:8188/\nremote https://example.com:8000/\n",
+        encoding="utf-8",
+    )
+    assert manager._detected_local_url("urls") == ""
+
+
+def test_log_url_detection_ignores_urls_before_current_run_offset():
+    manager = ProcManager()
+    log_path = paths.log_file("current-run-url")
+    log_path.write_text("old http://127.0.0.1:8001/\n", encoding="utf-8")
+    current_run_offset = log_path.stat().st_size
+
+    assert manager._detected_local_url("current-run-url", current_run_offset) == ""
+
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write("new http://0.0.0.0:8002/\n")
+    assert manager._detected_local_url("current-run-url", current_run_offset) == "http://127.0.0.1:8002/"
+
+
+def test_local_url_normalization_preserves_path_and_accepts_loopback_range():
+    assert ProcManager._normalized_local_url(
+        "http://0.0.0.0:8188/path/0.0.0.0?next=0.0.0.0"
+    ) == "http://127.0.0.1:8188/path/0.0.0.0?next=0.0.0.0"
+    assert ProcManager._normalized_local_url("http://127.0.0.2:8000/") == "http://127.0.0.2:8000/"
+    assert ProcManager._normalized_local_url("https://example.com/") == ""
+    assert ProcManager._normalized_local_url("http://127.0.0.1:99999/") == ""
+
+
+def test_tcp_readiness_probes_only_configured_loopback_port(monkeypatch):
+    probed: list[int] = []
+    monkeypatch.setattr(ProcManager, "_probe_tcp", staticmethod(lambda port: probed.append(port) or True))
+    monkeypatch.setattr(ProcManager, "_probe_http", staticmethod(lambda _url: False))
+    manager = ProcManager()
+    tool = ToolConfig(
+        "tcp-ready",
+        "TCP ready",
+        python_command("import time; time.sleep(60)"),
+        tempfile.gettempdir(),
+        readiness=ReadinessConfig("tcp", 0.05, 2, "http://127.0.0.1:19999/", 18767),
+        stop_timeout=0.1,
+    )
+
+    try:
+        assert manager.start(tool).state == "starting"
+        ready = wait_for(manager, tool.id, {"running"}, timeout=3)
+        assert ready.active
+        assert probed == [18767]
+    finally:
+        manager.stop_blocking(tool)
 
 
 def test_stop_kills_whole_process_group():
@@ -162,7 +397,7 @@ def test_surviving_group_blocks_duplicate_start():
 
     assert child_pid and proc_alive(child_pid)
     assert not proc_alive(leader.pid)
-    assert manager.status(tool.id).state == "running"
+    assert manager.status(tool.id).active
     with pytest.raises(ProcessError, match="已在运行"):
         manager.start(tool)
 
@@ -231,6 +466,7 @@ def test_finished_child_cannot_overwrite_a_new_run_state():
     assert manager.status("state-race").state == "running"
     persisted = json.loads(paths.state_json("state-race").read_text(encoding="utf-8"))
     assert persisted["run_id"] == "new-run"
+    assert persisted["readiness_state"] == "ready"
     assert "leader_exit_code" not in persisted
     assert "state-race" not in manager._children
 

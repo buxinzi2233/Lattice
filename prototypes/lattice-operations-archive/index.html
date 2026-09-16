@@ -1,0 +1,2059 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src data:; font-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>Lattice / 晶格中枢 - 全景运行档案台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --mineral: #dee0db;
+      --paper: #f7f6f0;
+      --paper-strong: #fffef9;
+      --ink: #151713;
+      --ink-raised: #252924;
+      --line: #aeb4ab;
+      --line-soft: #cdd1ca;
+      --muted: #626861;
+      --faint: #81877f;
+      --oxide: #c7432c;
+      --oxide-dark: #92311f;
+      --verdigris: #217f6b;
+      --signal: #d2a72a;
+      --fault: #a92e3f;
+      --white: #fffef9;
+      --scrim: rgba(21, 23, 19, 0.72);
+      --sans: "Noto Sans SC", "Microsoft YaHei UI", system-ui, sans-serif;
+      --mono: "IBM Plex Mono", "JetBrains Mono", "Noto Sans Mono CJK SC", monospace;
+      --radius: 4px;
+      --radius-small: 2px;
+      --fast: 120ms;
+      --normal: 210ms;
+      --divider-width: 8px;
+      --matrix-columns: 42px minmax(175px, 1.25fr) 94px 92px 68px 82px minmax(150px, 1.4fr) 86px 38px;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; }
+    html { background: var(--mineral); }
+    body {
+      margin: 0;
+      min-width: 1024px;
+      min-height: 700px;
+      overflow: hidden;
+      background: var(--mineral);
+      color: var(--ink);
+      font-family: var(--sans);
+      font-size: 13px;
+      line-height: 1.45;
+      letter-spacing: 0;
+      text-rendering: optimizeLegibility;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    button, input, textarea, select { font: inherit; letter-spacing: 0; }
+    button { color: inherit; }
+    button:not(:disabled), [role="button"]:not([aria-disabled="true"]) { cursor: pointer; }
+    button:disabled { cursor: not-allowed; }
+    svg { display: block; }
+    [hidden] { display: none !important; }
+    ::selection { background: var(--signal); color: var(--ink); }
+
+    .icon-sprite {
+      position: fixed;
+      width: 0;
+      height: 0;
+      overflow: hidden;
+      pointer-events: none;
+    }
+    .icon {
+      width: 17px;
+      height: 17px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 1.8;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      flex: none;
+    }
+
+    :focus-visible {
+      outline: 2px solid var(--oxide);
+      outline-offset: 2px;
+    }
+
+    .app {
+      width: 100%;
+      height: 100vh;
+      min-height: 700px;
+      display: grid;
+      grid-template-rows: 92px 74px minmax(0, 1fr) 28px;
+      overflow: hidden;
+      background: var(--paper);
+    }
+
+    .identity-band {
+      display: grid;
+      grid-template-columns: minmax(390px, 1.25fr) minmax(340px, 0.8fr) auto;
+      align-items: stretch;
+      color: var(--white);
+      background: var(--ink);
+      border-bottom: 4px solid var(--oxide);
+    }
+
+    .brand-block {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 20px;
+      padding: 14px 24px;
+      border-right: 1px solid #444a43;
+    }
+    .brand-index {
+      width: 54px;
+      height: 54px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #596059;
+      color: var(--signal);
+      font-family: var(--mono);
+      font-size: 18px;
+      font-weight: 700;
+      position: relative;
+    }
+    .brand-index::before,
+    .brand-index::after {
+      content: "";
+      position: absolute;
+      background: var(--oxide);
+    }
+    .brand-index::before { width: 14px; height: 3px; top: -2px; left: 7px; }
+    .brand-index::after { width: 3px; height: 14px; right: -2px; bottom: 7px; }
+    .brand-copy { min-width: 0; }
+    .eyebrow {
+      margin: 0 0 3px;
+      color: #aeb5ae;
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .brand-copy h1 {
+      margin: 0;
+      display: flex;
+      align-items: baseline;
+      gap: 14px;
+      font-size: 31px;
+      line-height: 1;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .brand-copy h1 span {
+      color: #c8cdc7;
+      font-size: 16px;
+      font-weight: 500;
+    }
+    .brand-meta {
+      margin-top: 7px;
+      color: #89918a;
+      font-family: var(--mono);
+      font-size: 9px;
+      white-space: nowrap;
+    }
+
+    .archive-summary {
+      min-width: 0;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(82px, 1fr));
+      align-items: stretch;
+    }
+    .summary-cell {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 12px 16px;
+      border-right: 1px solid #444a43;
+    }
+    .summary-cell b {
+      color: var(--white);
+      font-family: var(--mono);
+      font-size: 22px;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+    .summary-cell span {
+      margin-top: 7px;
+      color: #929a92;
+      font-family: var(--mono);
+      font-size: 8px;
+      text-transform: uppercase;
+    }
+    .summary-cell.active b { color: #65b8a7; }
+    .summary-cell.faults b { color: #db6a77; }
+
+    .command-cluster {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0 18px;
+    }
+    .command-divider { width: 1px; height: 32px; margin: 0 4px; background: #4b514b; }
+
+    .icon-button,
+    .compact-button,
+    .action-button {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-small);
+      background: var(--paper-strong);
+      color: var(--ink);
+      transition: background var(--fast), border-color var(--fast), color var(--fast), transform var(--fast);
+    }
+    .icon-button { width: 38px; height: 38px; padding: 0; }
+    .identity-band .icon-button { border-color: #4b514b; background: var(--ink-raised); color: #d9ddd7; }
+    .icon-button:hover:not(:disabled),
+    .compact-button:hover:not(:disabled),
+    .action-button:hover:not(:disabled) { border-color: var(--ink); background: var(--mineral); }
+    .identity-band .icon-button:hover:not(:disabled) { border-color: #a9b0a9; background: #343a34; }
+    .icon-button:active:not(:disabled),
+    .compact-button:active:not(:disabled),
+    .action-button:active:not(:disabled) { transform: translateY(1px); }
+    .icon-button.danger { color: #f08272; }
+    .icon-button:disabled, .compact-button:disabled, .action-button:disabled { opacity: 0.38; }
+
+    [data-tooltip]::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      z-index: 40;
+      left: 50%;
+      top: calc(100% + 8px);
+      transform: translateX(-50%) translateY(-3px);
+      width: max-content;
+      max-width: 220px;
+      padding: 6px 8px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-small);
+      background: var(--ink);
+      color: var(--white);
+      font-family: var(--sans);
+      font-size: 10px;
+      line-height: 1.25;
+      white-space: normal;
+      pointer-events: none;
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity var(--fast), transform var(--fast), visibility var(--fast);
+    }
+    [data-tooltip]:hover::after,
+    [data-tooltip]:focus-visible::after {
+      opacity: 1;
+      visibility: visible;
+      transform: translateX(-50%) translateY(0);
+    }
+    .command-cluster [data-tooltip]:last-child::after { left: auto; right: 0; transform: translateY(-3px); }
+    .command-cluster [data-tooltip]:last-child:hover::after,
+    .command-cluster [data-tooltip]:last-child:focus-visible::after { transform: translateY(0); }
+
+    .evidence-band {
+      display: grid;
+      grid-template-columns: 210px repeat(3, minmax(150px, 0.7fr)) minmax(300px, 1.6fr);
+      min-width: 0;
+      border-bottom: 1px solid var(--line);
+      background: var(--mineral);
+    }
+    .link-cell,
+    .metric-cell,
+    .trace-cell {
+      min-width: 0;
+      border-right: 1px solid var(--line);
+    }
+    .link-cell {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 18px;
+    }
+    .link-mark {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--verdigris);
+      color: var(--verdigris);
+      font-family: var(--mono);
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .link-copy b { display: block; font-size: 12px; }
+    .link-copy span { color: var(--muted); font-family: var(--mono); font-size: 8px; }
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      display: inline-block;
+      margin-right: 6px;
+      background: var(--verdigris);
+      border: 1px solid var(--ink);
+      vertical-align: 0;
+    }
+
+    .metric-cell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 42px;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 14px;
+    }
+    .metric-label { color: var(--muted); font-family: var(--mono); font-size: 8px; }
+    .metric-value {
+      margin-top: 2px;
+      font-family: var(--mono);
+      font-size: 17px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+    }
+    .metric-detail {
+      color: var(--faint);
+      font-family: var(--mono);
+      font-size: 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .meter {
+      height: 38px;
+      display: flex;
+      align-items: flex-end;
+      gap: 3px;
+      padding-bottom: 2px;
+    }
+    .meter i { width: 5px; background: var(--line); transition: height var(--normal), background var(--normal); }
+    .meter i.on { background: var(--verdigris); }
+
+    .trace-cell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 14px 6px;
+    }
+    .trace-wrap { min-width: 0; height: 58px; position: relative; }
+    .trace-title {
+      position: absolute;
+      z-index: 1;
+      top: 0;
+      left: 0;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+      pointer-events: none;
+    }
+    #telemetryCanvas { width: 100%; height: 58px; display: block; }
+    .sample-control { align-self: center; }
+
+    .workspace {
+      --matrix-pane-width: calc(60% - 4.8px);
+      min-height: 0;
+      display: grid;
+      grid-template-columns: var(--matrix-pane-width) var(--divider-width) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
+      background: var(--paper);
+    }
+
+    .matrix-panel {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto minmax(0, 1fr);
+      container: matrix-pane / inline-size;
+      overflow: hidden;
+    }
+    .workspace-divider {
+      position: relative;
+      z-index: 12;
+      min-width: 0;
+      display: grid;
+      place-items: center;
+      border-left: 1px solid var(--ink);
+      border-right: 1px solid var(--line);
+      background: var(--mineral);
+      color: var(--muted);
+      cursor: col-resize;
+      touch-action: none;
+      user-select: none;
+      transition: background var(--fast), color var(--fast);
+    }
+    .workspace-divider:hover,
+    .workspace-divider:focus-visible,
+    .workspace.is-resizing .workspace-divider { background: #d2d5cf; color: var(--ink); }
+    .workspace-divider:focus-visible { outline-offset: -2px; }
+    .workspace-divider .icon {
+      width: 10px;
+      height: 22px;
+      pointer-events: none;
+    }
+    .workspace.is-resizing,
+    .workspace.is-resizing * { cursor: col-resize !important; user-select: none !important; }
+    .query-band {
+      display: grid;
+      grid-template-columns: minmax(230px, 1fr) auto auto;
+      align-items: center;
+      gap: 14px;
+      padding: 7px 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--paper-strong);
+    }
+    .search-box {
+      width: min(430px, 100%);
+      height: 34px;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 0 10px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-small);
+      background: var(--paper);
+    }
+    .search-box:focus-within { border-color: var(--oxide); }
+    .search-box .icon { width: 15px; height: 15px; color: var(--muted); }
+    .search-box input {
+      min-width: 0;
+      flex: 1;
+      padding: 0;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--ink);
+      font-size: 12px;
+    }
+    .search-box input::placeholder { color: var(--faint); }
+
+    .filter-control {
+      justify-self: start;
+      display: inline-grid;
+      grid-auto-flow: column;
+      grid-auto-columns: minmax(72px, auto);
+      height: 34px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-small);
+      overflow: hidden;
+    }
+    .filter-control button {
+      min-width: 72px;
+      padding: 0 11px;
+      border: 0;
+      border-right: 1px solid var(--line);
+      background: var(--paper);
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 650;
+    }
+    .filter-control button:last-child { border-right: 0; }
+    .filter-control button:hover { background: var(--mineral); color: var(--ink); }
+    .filter-control button.active { background: var(--ink); color: var(--white); }
+    .matrix-summary {
+      min-width: 130px;
+      text-align: right;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 9px;
+      font-variant-numeric: tabular-nums;
+    }
+    .matrix-summary b { color: var(--ink); font-size: 13px; }
+
+    .matrix-scroll {
+      min-height: 0;
+      overflow: auto;
+      background: var(--paper);
+    }
+    .matrix-scroll::-webkit-scrollbar,
+    .log-lines::-webkit-scrollbar,
+    .editor-body::-webkit-scrollbar { width: 9px; height: 9px; }
+    .matrix-scroll::-webkit-scrollbar-thumb,
+    .log-lines::-webkit-scrollbar-thumb,
+    .editor-body::-webkit-scrollbar-thumb { background: var(--line); border: 2px solid var(--paper); }
+
+    .matrix-head,
+    .unit-row {
+      display: grid;
+      grid-template-columns: var(--matrix-columns);
+      align-items: center;
+    }
+    .matrix-head {
+      height: 30px;
+      position: sticky;
+      z-index: 8;
+      top: 0;
+      border-bottom: 1px solid var(--ink);
+      background: var(--mineral);
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+      text-transform: uppercase;
+    }
+    .matrix-head > span,
+    .unit-row > div { min-width: 0; padding: 0 10px; }
+    .matrix-head > span:not(:last-child),
+    .unit-row > div:not(:last-child) { border-right: 1px solid var(--line-soft); }
+
+    .group-row {
+      min-width: max-content;
+      min-height: 32px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 0 12px;
+      border-top: 1px solid var(--ink);
+      border-bottom: 1px solid var(--line);
+      background: var(--mineral);
+      color: var(--ink);
+      transition: background var(--fast), box-shadow var(--fast);
+    }
+    #matrixContent > .group-row:first-child { border-top: 0; }
+    .group-row.drag-over { background: #f1dfbc; box-shadow: inset 0 0 0 2px var(--oxide); }
+    .group-row-title {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .group-row-title .icon { width: 13px; height: 13px; color: var(--muted); }
+    .group-row-code {
+      color: var(--oxide);
+      font-family: var(--mono);
+      font-size: 8px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .group-row-name {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 10px;
+      font-weight: 760;
+    }
+    .group-row-count {
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+      white-space: nowrap;
+    }
+
+    .unit-row {
+      min-height: 50px;
+      position: relative;
+      border-bottom: 1px solid var(--line-soft);
+      background: var(--paper);
+      color: var(--ink);
+      transition: background var(--fast), color var(--fast), box-shadow var(--fast);
+      user-select: none;
+    }
+    .unit-row:hover { background: var(--paper-strong); }
+    .unit-row.selected {
+      background: #fff4e9;
+      box-shadow: inset 0 2px var(--oxide), inset 0 -2px var(--oxide);
+    }
+    .unit-row.selected::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 5px;
+      background: var(--oxide);
+    }
+    .unit-row.dragging { opacity: 0.38; }
+    .unit-row.drag-over { box-shadow: inset 0 2px var(--oxide); }
+    .seq-cell { color: var(--muted); font-family: var(--mono); font-size: 10px; font-weight: 700; }
+    .identity-cell strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 12px;
+    }
+    .identity-cell span,
+    .mono-cell {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+      font-variant-numeric: tabular-nums;
+    }
+    .group-cell span,
+    .group-cell strong {
+      display: block;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--mono);
+      font-size: 8px;
+      font-weight: 600;
+    }
+    .group-cell span { color: var(--oxide); }
+    .group-cell strong { margin-top: 1px; color: var(--muted); }
+    .state-cell {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .state-mark { width: 7px; height: 7px; border: 1px solid currentColor; background: currentColor; }
+    .state-running { color: var(--verdigris); }
+    .state-stopping { color: #8d7012; }
+    .state-exited { color: var(--fault); }
+    .state-stopped { color: var(--muted); }
+    .drag-cell { display: grid; place-items: center; color: var(--faint); }
+    .drag-cell .icon { width: 15px; height: 15px; }
+    .empty-matrix {
+      min-height: 128px;
+      display: grid;
+      place-items: center;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+
+    .dossier {
+      min-height: 0;
+      display: grid;
+      grid-template-rows: auto 38px minmax(0, 1fr);
+      container: dossier-pane / inline-size;
+      background: var(--paper-strong);
+      overflow: hidden;
+    }
+    .dossier-head {
+      min-width: 0;
+      min-height: 76px;
+      display: grid;
+      grid-template-columns: 76px minmax(0, 1fr) auto;
+      border-bottom: 1px solid var(--line);
+    }
+    .dossier-index {
+      display: grid;
+      place-items: center;
+      border-right: 1px solid var(--ink);
+      background: var(--oxide);
+      color: var(--white);
+      font-family: var(--mono);
+      font-size: 23px;
+      font-weight: 700;
+    }
+    .dossier-identity {
+      min-width: 0;
+      display: grid;
+      align-content: center;
+      padding: 9px 18px;
+    }
+    .dossier-kicker {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      color: var(--oxide);
+      font-family: var(--mono);
+      font-size: 8px;
+      font-weight: 700;
+    }
+    .dossier-identity h2 {
+      margin: 2px 0 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 23px;
+      line-height: 1.08;
+    }
+    .dossier-path {
+      margin-top: 4px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+    }
+    .dossier-actions {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 18px;
+      border-left: 1px solid var(--line);
+    }
+    .action-button {
+      min-width: 86px;
+      height: 38px;
+      gap: 8px;
+      padding: 0 12px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .action-label { white-space: nowrap; }
+    .dossier-actions [data-tooltip]:last-child::after { left: auto; right: 0; transform: translateY(-3px); }
+    .dossier-actions [data-tooltip]:last-child:hover::after,
+    .dossier-actions [data-tooltip]:last-child:focus-visible::after { transform: translateY(0); }
+    .action-button.primary { border-color: var(--verdigris); background: var(--verdigris); color: var(--white); }
+    .action-button.primary:hover:not(:disabled) { border-color: var(--ink); background: #176252; }
+    .action-button.stop { border-color: var(--oxide); background: var(--oxide); color: var(--white); }
+    .action-button.stop:hover:not(:disabled) { border-color: var(--ink); background: var(--oxide-dark); }
+    .compact-button { height: 32px; gap: 7px; padding: 0 10px; font-size: 10px; font-weight: 650; }
+    .compact-button.icon-only { width: 32px; padding: 0; }
+
+    .dossier-tabs {
+      display: flex;
+      align-items: end;
+      gap: 0;
+      padding-left: 76px;
+      border-bottom: 1px solid var(--ink);
+      background: var(--mineral);
+    }
+    .dossier-tabs button {
+      min-width: 118px;
+      height: 37px;
+      padding: 0 18px;
+      border: 0;
+      border-left: 1px solid var(--line);
+      background: transparent;
+      color: var(--muted);
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .dossier-tabs button:last-child { border-right: 1px solid var(--line); }
+    .dossier-tabs button:hover { background: #d4d7d1; color: var(--ink); }
+    .dossier-tabs button.active { background: var(--paper-strong); color: var(--ink); box-shadow: inset 0 3px var(--oxide); }
+    .dossier-content { min-width: 0; min-height: 0; overflow: hidden; }
+
+    .log-view {
+      height: 100%;
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: 38px minmax(0, 1fr);
+    }
+    .log-toolbar {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 14px 0 18px;
+      border-bottom: 1px solid var(--line-soft);
+      background: var(--paper);
+    }
+    .log-channel {
+      min-width: 0;
+      flex: 1;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 8px;
+    }
+    .log-channel span:nth-child(2) { flex: none; white-space: nowrap; }
+    .log-channel span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .log-toolbar [data-tooltip]:last-child::after { left: auto; right: 0; transform: translateY(-3px); }
+    .log-toolbar [data-tooltip]:last-child:hover::after,
+    .log-toolbar [data-tooltip]:last-child:focus-visible::after { transform: translateY(0); }
+    .follow-control {
+      height: 28px;
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-small);
+      color: var(--muted);
+      font-size: 9px;
+      cursor: pointer;
+    }
+    .follow-control input { position: absolute; opacity: 0; pointer-events: none; }
+    .follow-box { width: 12px; height: 12px; display: grid; place-items: center; border: 1px solid var(--line); }
+    .follow-control input:checked + .follow-box { border-color: var(--verdigris); background: var(--verdigris); color: var(--white); }
+    .follow-box .icon { width: 9px; height: 9px; }
+
+    .log-lines {
+      min-width: 0;
+      min-height: 0;
+      overflow: auto;
+      background-color: var(--paper-strong);
+    }
+    .log-line {
+      min-height: 28px;
+      display: grid;
+      grid-template-columns: 86px 62px minmax(0, 1fr);
+      align-items: start;
+      border-left: 5px solid var(--line);
+      border-bottom: 1px solid #e5e5de;
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.45;
+    }
+    .log-line > span { min-width: 0; padding: 7px 10px 5px; }
+    .log-time { color: var(--faint); border-right: 1px solid var(--line-soft); font-variant-numeric: tabular-nums; }
+    .log-level { color: var(--muted); border-right: 1px solid var(--line-soft); font-size: 8px; font-weight: 700; }
+    .log-message { white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
+    .log-line.info { border-left-color: var(--verdigris); }
+    .log-line.warn { border-left-color: var(--signal); }
+    .log-line.error { border-left-color: var(--fault); }
+    .log-line.command { border-left-color: var(--oxide); background: #fff3e7; }
+    .log-empty { height: 100%; display: grid; place-items: center; color: var(--faint); font-family: var(--mono); font-size: 10px; }
+
+    .manifest-view {
+      min-width: 0;
+      height: 100%;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      overflow: auto;
+      background: var(--paper-strong);
+    }
+    .manifest-cell {
+      min-width: 0;
+      min-height: 72px;
+      padding: 10px 14px;
+      border-right: 1px solid var(--line-soft);
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .manifest-cell.wide { grid-column: span 2; }
+    .manifest-cell.full { grid-column: 1 / -1; }
+    .manifest-label { color: var(--muted); font-family: var(--mono); font-size: 8px; text-transform: uppercase; }
+    .manifest-value {
+      margin-top: 8px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    .manifest-value.wrap { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+    .status-line {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      padding: 0 14px;
+      border-top: 1px solid var(--line);
+      background: var(--ink);
+      color: #aab1aa;
+      font-family: var(--mono);
+      font-size: 8px;
+    }
+    .status-line .center { color: #72b9aa; }
+    .status-line .right { text-align: right; }
+
+    .overlay {
+      position: fixed;
+      z-index: 80;
+      inset: 0;
+      display: flex;
+      align-items: flex-end;
+      background: var(--scrim);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity var(--normal), visibility var(--normal);
+    }
+    .overlay.open { opacity: 1; visibility: visible; }
+    .editor-sheet {
+      width: 100%;
+      max-height: min(86vh, 760px);
+      display: grid;
+      grid-template-rows: 78px minmax(0, 1fr) 62px;
+      border-top: 4px solid var(--oxide);
+      background: var(--paper-strong);
+      transform: translateY(32px);
+      transition: transform var(--normal);
+    }
+    .overlay.open .editor-sheet { transform: translateY(0); }
+    .editor-head {
+      display: grid;
+      grid-template-columns: 78px 1fr auto;
+      align-items: center;
+      border-bottom: 1px solid var(--ink);
+    }
+    .editor-number {
+      align-self: stretch;
+      display: grid;
+      place-items: center;
+      border-right: 1px solid var(--ink);
+      background: var(--ink);
+      color: var(--signal);
+      font-family: var(--mono);
+      font-size: 20px;
+      font-weight: 700;
+    }
+    .editor-title { padding: 0 20px; }
+    .editor-title p { margin: 0; color: var(--oxide); font-family: var(--mono); font-size: 8px; font-weight: 700; }
+    .editor-title h2 { margin: 3px 0 0; font-size: 23px; }
+    .editor-close { margin-right: 18px; }
+    .editor-body { min-height: 0; overflow: auto; }
+    .form-section {
+      display: grid;
+      grid-template-columns: 150px minmax(0, 1fr);
+      border-bottom: 1px solid var(--line);
+    }
+    .form-section-title {
+      padding: 18px 20px;
+      border-right: 1px solid var(--line);
+      color: var(--oxide);
+      font-family: var(--mono);
+      font-size: 9px;
+      font-weight: 700;
+    }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 14px;
+      padding: 16px 20px 18px;
+    }
+    .field { min-width: 0; grid-column: span 4; }
+    .field.half { grid-column: span 6; }
+    .field.wide { grid-column: span 8; }
+    .field.full { grid-column: 1 / -1; }
+    .field label { display: block; margin-bottom: 6px; color: var(--muted); font-size: 10px; font-weight: 650; }
+    .field input,
+    .field textarea,
+    .field select {
+      width: 100%;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: var(--radius-small);
+      outline: 0;
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--mono);
+      font-size: 11px;
+    }
+    .field input, .field select { height: 36px; padding: 0 10px; }
+    .field textarea { min-height: 74px; padding: 9px 10px; resize: vertical; }
+    .field input:focus, .field textarea:focus, .field select:focus { border-color: var(--oxide); box-shadow: 0 0 0 1px var(--oxide); }
+    .field input[readonly] { color: var(--faint); background: var(--mineral); }
+    .checkbox-field { display: flex; align-items: center; gap: 10px; min-height: 36px; }
+    .checkbox-field input { width: 16px; height: 16px; accent-color: var(--verdigris); }
+    .form-error {
+      min-height: 34px;
+      display: flex;
+      align-items: center;
+      padding: 0 20px 0 170px;
+      color: var(--fault);
+      font-size: 10px;
+      font-weight: 650;
+    }
+    .editor-foot {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 18px;
+      border-top: 1px solid var(--ink);
+      background: var(--mineral);
+    }
+    .editor-foot .spacer { flex: 1; }
+    .editor-foot .action-button { min-width: 110px; }
+    .editor-foot .delete { border-color: var(--fault); color: var(--fault); }
+
+    .confirm-layer {
+      position: fixed;
+      z-index: 110;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: var(--scrim);
+      opacity: 0;
+      visibility: hidden;
+      transition: opacity var(--normal), visibility var(--normal);
+    }
+    .confirm-layer.open { opacity: 1; visibility: visible; }
+    .confirm-panel {
+      width: min(460px, 100%);
+      border: 1px solid var(--ink);
+      border-top: 4px solid var(--fault);
+      background: var(--paper-strong);
+    }
+    .confirm-kicker { padding: 13px 18px 0; color: var(--fault); font-family: var(--mono); font-size: 8px; font-weight: 700; }
+    .confirm-panel h2 { margin: 5px 18px 0; font-size: 22px; }
+    .confirm-panel p { margin: 12px 18px 18px; color: var(--muted); line-height: 1.65; }
+    .confirm-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 18px; border-top: 1px solid var(--line); background: var(--mineral); }
+    .confirm-actions .danger { border-color: var(--fault); background: var(--fault); color: var(--white); }
+
+    .toast-region {
+      position: fixed;
+      z-index: 140;
+      top: 104px;
+      right: 16px;
+      width: min(360px, calc(100vw - 32px));
+      display: grid;
+      gap: 8px;
+      pointer-events: none;
+    }
+    .toast {
+      display: grid;
+      grid-template-columns: 5px minmax(0, 1fr);
+      border: 1px solid var(--ink);
+      background: var(--paper-strong);
+      color: var(--ink);
+      box-shadow: 7px 7px 0 rgba(21, 23, 19, 0.16);
+      animation: toast-in var(--normal) ease-out both;
+    }
+    .toast-mark { background: var(--verdigris); }
+    .toast.warning .toast-mark { background: var(--signal); }
+    .toast.error .toast-mark { background: var(--fault); }
+    .toast-copy { padding: 10px 12px; }
+    .toast-copy b { display: block; font-size: 11px; }
+    .toast-copy span { display: block; margin-top: 2px; color: var(--muted); font-family: var(--mono); font-size: 8px; overflow-wrap: anywhere; }
+
+    @keyframes toast-in {
+      from { opacity: 0; transform: translateY(-8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    @container matrix-pane (max-width: 820px) {
+      .matrix-scroll { --matrix-columns: 40px minmax(150px, 1.25fr) 82px 86px 62px 76px minmax(125px, 1.25fr) 34px; }
+      .col-autostart { display: none !important; }
+      .query-band {
+        grid-template-columns: minmax(170px, 1fr) auto auto;
+        gap: 8px;
+        padding: 7px 12px;
+      }
+      .search-box { width: 100%; }
+      .filter-control { grid-auto-columns: minmax(52px, auto); }
+      .filter-control button { min-width: 52px; padding: 0 7px; }
+      .matrix-summary { min-width: 108px; }
+    }
+
+    @container matrix-pane (max-width: 700px) {
+      .matrix-scroll { --matrix-columns: 38px minmax(145px, 1.3fr) 78px 82px 58px minmax(125px, 1.2fr) 32px; }
+      .col-uptime { display: none !important; }
+      .filter-control { grid-auto-columns: minmax(50px, auto); }
+      .filter-control button { min-width: 50px; padding: 0 6px; }
+    }
+
+    @container matrix-pane (max-width: 640px) {
+      .matrix-scroll { --matrix-columns: 38px minmax(135px, 1.35fr) 78px 58px minmax(120px, 1.2fr) 32px; }
+      .col-group { display: none !important; }
+      .query-band {
+        grid-template-columns: minmax(0, 1fr) auto;
+        grid-template-rows: 34px 34px;
+        gap: 8px;
+        padding: 8px 12px;
+      }
+      .search-box { grid-column: 1 / -1; }
+      .filter-control { grid-column: 1; }
+      .matrix-summary { grid-column: 2; min-width: 104px; }
+    }
+
+    @container matrix-pane (max-width: 480px) {
+      .matrix-scroll { --matrix-columns: 34px minmax(110px, 1.25fr) 70px 50px minmax(90px, 1fr) 28px; }
+    }
+
+    @container dossier-pane (max-width: 720px) {
+      .dossier-identity { padding-left: 14px; padding-right: 14px; }
+      .dossier-identity h2 { font-size: 20px; }
+      .dossier-actions { gap: 6px; padding: 0 12px; }
+      .dossier-actions .action-button { width: 38px; min-width: 38px; gap: 0; padding: 0; }
+      .dossier-actions .action-label { display: none; }
+      .manifest-view { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    }
+
+    @container dossier-pane (max-width: 480px) {
+      .dossier-head {
+        grid-template-columns: 64px minmax(0, 1fr);
+        grid-template-rows: 76px 54px;
+      }
+      .dossier-index { grid-row: 1 / 3; }
+      .dossier-actions {
+        grid-column: 2;
+        justify-content: flex-end;
+        padding: 0 10px;
+        border-top: 1px solid var(--line);
+        border-left: 0;
+      }
+      .dossier-tabs { padding-left: 64px; }
+      .dossier-identity { padding-left: 14px; padding-right: 12px; }
+    }
+
+    @media (max-width: 1260px) {
+      .evidence-band { grid-template-columns: 190px repeat(3, minmax(132px, 0.68fr)) minmax(260px, 1.45fr); }
+      .brand-block { padding-left: 18px; padding-right: 18px; gap: 14px; }
+      .brand-copy h1 { font-size: 28px; }
+      .command-cluster { padding: 0 12px; gap: 4px; }
+    }
+
+    @media (max-width: 1100px) {
+      .identity-band { grid-template-columns: minmax(360px, 1.25fr) minmax(250px, 0.75fr) auto; }
+      .summary-cell { padding: 10px 11px; }
+      .summary-cell span { font-size: 7px; }
+      .command-cluster .optional-command { display: none; }
+      .evidence-band { grid-template-columns: 172px repeat(3, minmax(124px, 0.65fr)) minmax(250px, 1.35fr); }
+      .metric-cell { padding-left: 10px; padding-right: 10px; }
+      .trace-cell { padding-left: 10px; padding-right: 10px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after {
+        scroll-behavior: auto !important;
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- Inline sprite uses Lucide icon geometry so the prototype remains offline. -->
+  <svg class="icon-sprite" aria-hidden="true">
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8.1 8.1 0 0 0-15.5-2M4 4v5h5"/><path d="M4 13a8.1 8.1 0 0 0 15.5 2M20 20v-5h-5"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6A2 2 0 0 1 18.47 20H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></symbol>
+    <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.77.04"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14"/><path d="M16 5v14"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><path d="m6 3 14 9-14 9z"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect width="14" height="14" x="5" y="5" rx="1"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-grip" viewBox="0 0 24 24"><circle cx="9" cy="5" r="1"/><circle cx="9" cy="12" r="1"/><circle cx="9" cy="19" r="1"/><circle cx="15" cy="5" r="1"/><circle cx="15" cy="12" r="1"/><circle cx="15" cy="19" r="1"/></symbol>
+    <symbol id="i-external" viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="i-eraser" viewBox="0 0 24 24"><path d="m7 21-4-4 9-13a2.3 2.3 0 0 1 3.5-.3l4.8 4.8a2.3 2.3 0 0 1-.3 3.5L7 21Z"/><path d="m14 6 7 7"/><path d="M5 19h16"/></symbol>
+    <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="m20 6-11 11-5-5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2Z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M19 6l-1 15H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></symbol>
+  </svg>
+
+  <div class="app" id="app">
+    <header class="identity-band">
+      <div class="brand-block">
+        <div class="brand-index" aria-hidden="true">06</div>
+        <div class="brand-copy">
+          <p class="eyebrow">Local process control / operations archive</p>
+          <h1>LATTICE <span>晶格中枢</span></h1>
+          <div class="brand-meta"><span id="clockDate">2026-08-03</span> / <span id="clockTime">--:--:--</span> / DESKTOP NODE</div>
+        </div>
+      </div>
+
+      <div class="archive-summary" aria-label="工具状态摘要">
+        <div class="summary-cell"><b id="totalCount">06</b><span>registered units</span></div>
+        <div class="summary-cell active"><b id="activeCount">03</b><span>active processes</span></div>
+        <div class="summary-cell faults"><b id="faultCount">01</b><span>attention required</span></div>
+      </div>
+
+      <nav class="command-cluster" aria-label="全局命令">
+        <button class="icon-button" type="button" data-action="add" data-tooltip="添加工具" aria-label="添加工具"><svg class="icon"><use href="#i-plus"/></svg></button>
+        <button class="icon-button" type="button" data-action="import" data-tooltip="导入工具或配置" aria-label="导入工具或配置"><svg class="icon"><use href="#i-upload"/></svg></button>
+        <button class="icon-button optional-command" type="button" data-action="reload" data-tooltip="重载配置索引" aria-label="重载配置索引"><svg class="icon"><use href="#i-refresh"/></svg></button>
+        <button class="icon-button optional-command" type="button" data-action="open-config" data-tooltip="打开配置目录" aria-label="打开配置目录"><svg class="icon"><use href="#i-folder"/></svg></button>
+        <span class="command-divider" aria-hidden="true"></span>
+        <button class="icon-button danger" type="button" data-action="stop-all" data-tooltip="停止全部活动工具" aria-label="停止全部活动工具"><svg class="icon"><use href="#i-power"/></svg></button>
+      </nav>
+    </header>
+
+    <section class="evidence-band" aria-label="系统证据带">
+      <div class="link-cell">
+        <div class="link-mark">LN</div>
+        <div class="link-copy"><b><span class="status-dot"></span><span id="linkLabel">采样连接</span></b><span id="sampleStamp">LOCAL / --:--:--</span></div>
+      </div>
+      <div class="metric-cell" data-metric="cpu">
+        <div><div class="metric-label">CPU / PROCESSOR</div><div class="metric-value" id="cpuValue">34%</div><div class="metric-detail" id="cpuDetail">4.1 / 12 THREADS</div></div>
+        <div class="meter" id="cpuMeter" aria-hidden="true"></div>
+      </div>
+      <div class="metric-cell" data-metric="memory">
+        <div><div class="metric-label">MEMORY / HOST</div><div class="metric-value" id="memoryValue">62%</div><div class="metric-detail" id="memoryDetail">19.8 / 32.0 GB</div></div>
+        <div class="meter" id="memoryMeter" aria-hidden="true"></div>
+      </div>
+      <div class="metric-cell" data-metric="gpu">
+        <div><div class="metric-label">GPU / COMPUTE</div><div class="metric-value" id="gpuValue">48%</div><div class="metric-detail" id="gpuDetail">7.7 / 16.0 GB</div></div>
+        <div class="meter" id="gpuMeter" aria-hidden="true"></div>
+      </div>
+      <div class="trace-cell">
+        <div class="trace-wrap"><span class="trace-title">SYSTEM EVIDENCE / 42 SAMPLES</span><canvas id="telemetryCanvas" aria-label="系统遥测轨迹"></canvas></div>
+        <button class="icon-button sample-control" id="sampleToggle" type="button" data-action="toggle-sampling" data-tooltip="暂停系统采样" aria-label="暂停系统采样"><svg class="icon"><use href="#i-pause"/></svg></button>
+      </div>
+    </section>
+
+    <main class="workspace" id="workspace">
+      <section class="matrix-panel" id="matrixPanel" aria-label="工具运行矩阵">
+        <div class="query-band">
+          <label class="search-box" for="toolSearch"><svg class="icon"><use href="#i-search"/></svg><input id="toolSearch" type="search" autocomplete="off" placeholder="搜索名称、ID、路径或分组" aria-label="搜索工具"><span class="eyebrow" aria-hidden="true">/</span></label>
+          <div class="filter-control" role="group" aria-label="状态筛选">
+            <button class="active" type="button" data-filter="all" aria-pressed="true">全部 <span id="filterAllCount">6</span></button>
+            <button type="button" data-filter="running" aria-pressed="false">活动 <span id="filterRunningCount">3</span></button>
+            <button type="button" data-filter="stopped" aria-pressed="false">静止 <span id="filterStoppedCount">2</span></button>
+            <button type="button" data-filter="exited" aria-pressed="false">异常 <span id="filterExitedCount">1</span></button>
+          </div>
+          <div class="matrix-summary"><b id="visibleCount">06</b> / VISIBLE &nbsp; <span id="groupCount">04</span> GROUPS</div>
+        </div>
+
+        <div class="matrix-scroll" id="matrixScroll">
+          <div class="matrix-head" aria-hidden="true">
+            <span>SEQ</span><span>UNIT / IDENTITY</span><span class="col-group">GROUP</span><span>STATE</span><span>PID</span><span class="col-uptime">UPTIME</span><span>WORKING DIRECTORY</span><span class="col-autostart">AUTOSTART</span><span></span>
+          </div>
+          <div id="matrixContent"></div>
+        </div>
+      </section>
+
+      <div class="workspace-divider" id="workspaceDivider" role="separator" tabindex="0" aria-label="调整矩阵与档案宽度" aria-orientation="vertical" aria-controls="matrixPanel dossierPanel" aria-valuemin="20" aria-valuemax="80" aria-valuenow="60" aria-valuetext="矩阵 60%，档案 40%">
+        <svg class="icon" aria-hidden="true"><use href="#i-grip"/></svg>
+      </div>
+
+      <section class="dossier" id="dossierPanel" aria-label="选中工具档案">
+        <div class="dossier-head" id="dossierHead"></div>
+        <div class="dossier-tabs" role="tablist" aria-label="档案视图">
+          <button class="active" id="tab-log" type="button" role="tab" aria-selected="true" data-tab="log">运行记录</button>
+          <button id="tab-manifest" type="button" role="tab" aria-selected="false" data-tab="manifest">配置档案</button>
+        </div>
+        <div class="dossier-content" id="dossierContent"></div>
+      </section>
+    </main>
+
+    <footer class="status-line">
+      <span id="footerSelection">SELECTED / COMFYUI</span>
+      <span class="center">MEMORY-ONLY PROTOTYPE / READY</span>
+      <span class="right" id="footerStatus">ORDER 06 / 06</span>
+    </footer>
+  </div>
+
+  <div class="overlay" id="editorOverlay" aria-hidden="true">
+    <form class="editor-sheet" id="toolForm" novalidate>
+      <div class="editor-head">
+        <div class="editor-number" id="editorNumber">NEW</div>
+        <div class="editor-title"><p id="editorKicker">UNIT REGISTRATION / NEW RECORD</p><h2 id="editorHeading">添加工具</h2></div>
+        <button class="icon-button editor-close" type="button" data-action="close-editor" data-tooltip="关闭编辑器" aria-label="关闭编辑器"><svg class="icon"><use href="#i-x"/></svg></button>
+      </div>
+
+      <div class="editor-body">
+        <section class="form-section">
+          <div class="form-section-title">01 / IDENTITY</div>
+          <div class="form-grid">
+            <div class="field half"><label for="fieldName">工具名称</label><input id="fieldName" name="name" required autocomplete="off"></div>
+            <div class="field half"><label for="fieldId">工具 ID</label><input id="fieldId" name="id" required autocomplete="off"></div>
+            <div class="field"><label for="fieldGroup">自定义分组</label><input id="fieldGroup" name="group" autocomplete="off"></div>
+            <div class="field wide"><label for="fieldCwd">工作目录</label><input id="fieldCwd" name="cwd" required autocomplete="off"></div>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <div class="form-section-title">02 / EXECUTION</div>
+          <div class="form-grid">
+            <div class="field full"><label for="fieldCommand">启动命令</label><textarea id="fieldCommand" name="command" required spellcheck="false"></textarea></div>
+            <div class="field half"><label for="fieldShell">命令解释器</label><input id="fieldShell" name="shell" autocomplete="off"></div>
+            <div class="field"><label for="fieldSignal">停止信号</label><select id="fieldSignal" name="stopSignal"><option>TERM</option><option>INT</option><option>HUP</option><option>KILL</option></select></div>
+            <div class="field"><label for="fieldTimeout">停止等待 / 秒</label><input id="fieldTimeout" name="stopTimeout" type="number" min="0.5" max="300" step="0.5"></div>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <div class="form-section-title">03 / ENVIRONMENT</div>
+          <div class="form-grid">
+            <div class="field wide"><label for="fieldEnv">环境变量 / 每行 KEY=VALUE</label><textarea id="fieldEnv" name="env" spellcheck="false"></textarea></div>
+            <div class="field">
+              <label>启动策略</label>
+              <label class="checkbox-field" for="fieldAutostart"><input id="fieldAutostart" name="autostart" type="checkbox">启动 Lattice 时自动运行</label>
+            </div>
+          </div>
+        </section>
+        <div class="form-error" id="formError" role="alert"></div>
+      </div>
+
+      <div class="editor-foot">
+        <button class="action-button delete" id="deleteButton" type="button" data-action="delete-tool"><svg class="icon"><use href="#i-trash"/></svg>删除记录</button>
+        <span class="spacer"></span>
+        <button class="action-button" type="button" data-action="close-editor">取消</button>
+        <button class="action-button stop" type="submit"><svg class="icon"><use href="#i-save"/></svg><span id="saveLabel">写入档案</span></button>
+      </div>
+    </form>
+  </div>
+
+  <div class="confirm-layer" id="confirmLayer" aria-hidden="true">
+    <section class="confirm-panel" role="alertdialog" aria-modal="true" aria-labelledby="confirmTitle" aria-describedby="confirmBody">
+      <div class="confirm-kicker">COMMAND AUTHORIZATION / REQUIRED</div>
+      <h2 id="confirmTitle">确认操作</h2>
+      <p id="confirmBody"></p>
+      <div class="confirm-actions">
+        <button class="action-button" type="button" data-action="cancel-confirm">取消</button>
+        <button class="action-button danger" id="confirmAccept" type="button">确认</button>
+      </div>
+    </section>
+  </div>
+
+  <div class="toast-region" id="toastRegion" aria-live="polite" aria-atomic="false"></div>
+
+  <script>
+    const icon = (name) => `<svg class="icon" aria-hidden="true"><use href="#i-${name}"></use></svg>`;
+    const stateLabels = { running: "运行中", stopping: "停止中", stopped: "已停止", exited: "异常退出" };
+    const groupCodes = new Map([
+      ["模型训练", "TRN-01"],
+      ["图像生成", "GEN-02"],
+      ["交互服务", "INT-03"],
+      ["模型推理", "INF-04"]
+    ]);
+
+    const log = (time, level, message) => ({ time, level, message });
+    const tools = [
+      {
+        id: "anima-studio", name: "Anima LoRA Studio", group: "模型训练", state: "exited", pid: null,
+        uptimeSeconds: 0, exitCode: 137, cwd: "~/Projects/AnimaLoraStudio", command: "./studio.sh run --no-browser",
+        shell: "/bin/bash", autostart: false, stopSignal: "TERM", stopTimeout: 20, env: { STUDIO_PORT: "7861" },
+        logs: [
+          log("13:41:08.014", "info", "Configuration loaded from local workspace"),
+          log("13:41:10.486", "command", "$ ./studio.sh run --no-browser"),
+          log("13:42:37.232", "warn", "Worker memory pressure crossed the configured threshold"),
+          log("13:42:39.918", "error", "Process tree exited with code 137")
+        ], clearedAt: 0
+      },
+      {
+        id: "anima-webui", name: "Anima LoRA WebUI", group: "模型训练", state: "stopped", pid: null,
+        uptimeSeconds: 0, exitCode: 0, cwd: "~/Projects/anima_lora_webui", command: "./start_webui.sh",
+        shell: "/bin/bash", autostart: false, stopSignal: "TERM", stopTimeout: 20, env: { PORT: "7860" },
+        logs: [log("10:22:05.601", "info", "Previous run completed normally"), log("10:22:05.733", "info", "State record committed; unit is ready")], clearedAt: 0
+      },
+      {
+        id: "monadforge-webui", name: "MonadForge WebUI", group: "模型训练", state: "running", pid: 22701,
+        uptimeSeconds: 1785, exitCode: null, cwd: "~/Projects/MonadForge", command: "bash ./start-webui-linux.sh",
+        shell: "/bin/bash", autostart: false, stopSignal: "TERM", stopTimeout: 15, env: { PORT: "7862", MODE: "production" },
+        logs: [
+          log("14:02:01.114", "command", "$ bash ./start-webui-linux.sh"),
+          log("14:02:02.805", "info", "Runtime initialized on CUDA device 0"),
+          log("14:02:05.410", "info", "HTTP service listening on 127.0.0.1:7862"),
+          log("14:28:44.002", "info", "Health sample accepted; queue depth 0")
+        ], clearedAt: 0
+      },
+      {
+        id: "comfyui", name: "ComfyUI", group: "图像生成", state: "running", pid: 18422,
+        uptimeSeconds: 8323, exitCode: null, cwd: "~/Projects/ComfyUI", command: "exec ./start-comfyui.fish 8188",
+        shell: "/usr/bin/fish", autostart: true, stopSignal: "TERM", stopTimeout: 20, env: { PORT: "8188" },
+        logs: [
+          log("12:11:02.082", "command", "$ exec ./start-comfyui.fish 8188"),
+          log("12:11:03.337", "info", "Checkpoint paths indexed: 18 entries"),
+          log("12:11:06.012", "info", "CUDA device: Tesla V100-SXM2-16GB"),
+          log("12:11:08.441", "info", "Server started at http://127.0.0.1:8188"),
+          log("14:17:54.128", "info", "Prompt executed in 7.42 seconds"),
+          log("14:29:12.904", "info", "Queue idle; persistent log channel attached")
+        ], clearedAt: 0
+      },
+      {
+        id: "sillytavern", name: "SillyTavern", group: "交互服务", state: "stopped", pid: null,
+        uptimeSeconds: 0, exitCode: 0, cwd: "~/Projects/SillyTavern", command: "npm start",
+        shell: "/bin/bash", autostart: false, stopSignal: "TERM", stopTimeout: 15, env: { NODE_ENV: "production" },
+        logs: [log("09:10:44.204", "command", "$ npm start"), log("10:03:11.884", "info", "Shutdown requested by operator"), log("10:03:12.102", "info", "Process tree stopped cleanly")], clearedAt: 0
+      },
+      {
+        id: "vllm", name: "vLLM", group: "模型推理", state: "stopping", pid: 25118,
+        uptimeSeconds: 641, exitCode: null, cwd: "~/Projects/llm-inference", command: "python -m vllm.entrypoints.openai.api_server --model CHANGE-ME",
+        shell: "/bin/bash", autostart: false, stopSignal: "TERM", stopTimeout: 30, env: { CUDA_VISIBLE_DEVICES: "0" },
+        logs: [log("14:20:07.171", "command", "$ python -m vllm.entrypoints.openai.api_server --model CHANGE-ME"), log("14:20:08.441", "warn", "Model path still uses the CHANGE-ME placeholder"), log("14:30:29.110", "warn", "Stop signal TERM sent to process group 25118")], clearedAt: 0
+      }
+    ];
+
+    const state = {
+      tools,
+      groups: ["模型训练", "图像生成", "交互服务", "模型推理"],
+      selectedId: "comfyui",
+      filter: "all",
+      search: "",
+      activeTab: "log",
+      follow: true,
+      samplingPaused: false,
+      draggingId: null,
+      editorMode: "add",
+      editorOriginalId: "",
+      confirmAction: null,
+      nextPid: 26340,
+      splitRatio: 60,
+      metrics: { cpu: 34, memory: 62, gpu: 48 },
+      history: {
+        cpu: Array.from({ length: 42 }, (_, i) => 29 + Math.round(8 * Math.sin(i / 4))),
+        memory: Array.from({ length: 42 }, (_, i) => 59 + Math.round(3 * Math.sin(i / 7))),
+        gpu: Array.from({ length: 42 }, (_, i) => 42 + Math.round(14 * Math.sin(i / 3.1)))
+      }
+    };
+
+    const $ = (selector, root = document) => root.querySelector(selector);
+    const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
+    const escapeHtml = (value) => String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" })[char]);
+    const selectedTool = () => state.tools.find((tool) => tool.id === state.selectedId) || state.tools[0];
+    const isActive = (tool) => tool.state === "running" || tool.state === "stopping";
+    const pad = (value) => String(value).padStart(2, "0");
+    const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
+    const nowStamp = () => {
+      const now = new Date();
+      return `${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}.${String(now.getMilliseconds()).padStart(3, "0")}`;
+    };
+    const formatUptime = (seconds) => {
+      if (seconds === null || seconds === undefined) return "--";
+      const h = Math.floor(seconds / 3600);
+      const m = Math.floor((seconds % 3600) / 60);
+      const s = Math.floor(seconds % 60);
+      return `${pad(h)}:${pad(m)}:${pad(s)}`;
+    };
+    const middlePath = (value, max = 38) => {
+      if (value.length <= max) return value;
+      const left = Math.ceil((max - 1) * 0.55);
+      return `${value.slice(0, left)}…${value.slice(-(max - left - 1))}`;
+    };
+    const getSplitBounds = () => {
+      const workspace = $("#workspace");
+      const divider = $("#workspaceDivider");
+      const availableWidth = Math.max(1, workspace.clientWidth - divider.offsetWidth);
+      let minRatio = Math.max(20, 400 / availableWidth * 100);
+      let maxRatio = Math.min(80, (availableWidth - 400) / availableWidth * 100);
+      if (minRatio > maxRatio) {
+        const lockedRatio = clamp(400 / (400 + 400) * 100, 20, 80);
+        minRatio = lockedRatio;
+        maxRatio = lockedRatio;
+      }
+      return { availableWidth, minRatio, maxRatio };
+    };
+    const ariaNumber = (value) => String(Number(value.toFixed(1)));
+    function applyWorkspaceSplit(nextRatio = state.splitRatio) {
+      const workspace = $("#workspace");
+      const divider = $("#workspaceDivider");
+      const { availableWidth, minRatio, maxRatio } = getSplitBounds();
+      state.splitRatio = clamp(nextRatio, minRatio, maxRatio);
+      workspace.style.setProperty("--matrix-pane-width", `${availableWidth * state.splitRatio / 100}px`);
+      divider.setAttribute("aria-valuemin", ariaNumber(minRatio));
+      divider.setAttribute("aria-valuemax", ariaNumber(maxRatio));
+      divider.setAttribute("aria-valuenow", ariaNumber(state.splitRatio));
+      divider.setAttribute("aria-valuetext", `矩阵 ${ariaNumber(state.splitRatio)}%，档案 ${ariaNumber(100 - state.splitRatio)}%`);
+    }
+    const groupCode = (group) => {
+      if (!groupCodes.has(group)) groupCodes.set(group, `GRP-${pad(groupCodes.size + 1)}`);
+      return groupCodes.get(group);
+    };
+
+    function matches(tool) {
+      const query = state.search.trim().toLocaleLowerCase("zh-CN");
+      const stateMatch = state.filter === "all"
+        || (state.filter === "running" && isActive(tool))
+        || (state.filter === "stopped" && tool.state === "stopped")
+        || (state.filter === "exited" && tool.state === "exited");
+      if (!stateMatch) return false;
+      if (!query) return true;
+      return [tool.name, tool.id, tool.cwd, tool.group].join("\n").toLocaleLowerCase("zh-CN").includes(query);
+    }
+
+    function renderSummary() {
+      const total = state.tools.length;
+      const active = state.tools.filter(isActive).length;
+      const faults = state.tools.filter((tool) => tool.state === "exited").length;
+      const stopped = state.tools.filter((tool) => tool.state === "stopped").length;
+      $("#totalCount").textContent = pad(total);
+      $("#activeCount").textContent = pad(active);
+      $("#faultCount").textContent = pad(faults);
+      $("#filterAllCount").textContent = total;
+      $("#filterRunningCount").textContent = active;
+      $("#filterStoppedCount").textContent = stopped;
+      $("#filterExitedCount").textContent = faults;
+    }
+
+    function toolRow(tool, sequence) {
+      const reorderLocked = Boolean(state.search.trim()) || state.filter !== "all";
+      return `
+        <div class="unit-row ${tool.id === state.selectedId ? "selected" : ""}" role="button" tabindex="0"
+          aria-label="选择 ${escapeHtml(tool.name)}，${stateLabels[tool.state]}"
+          draggable="${!reorderLocked}" data-reorder-locked="${reorderLocked}" data-tool-id="${escapeHtml(tool.id)}" data-group="${escapeHtml(tool.group)}">
+          <div class="seq-cell">${pad(sequence)}</div>
+          <div class="identity-cell"><strong>${escapeHtml(tool.name)}</strong><span>${escapeHtml(tool.id)}</span></div>
+          <div class="group-cell col-group"><span>${escapeHtml(groupCode(tool.group))}</span><strong>${escapeHtml(tool.group)}</strong></div>
+          <div class="state-cell state-${tool.state}"><span class="state-mark"></span>${stateLabels[tool.state]}</div>
+          <div class="mono-cell">${tool.pid ?? "----"}</div>
+          <div class="mono-cell col-uptime uptime" data-uptime-id="${escapeHtml(tool.id)}">${isActive(tool) ? formatUptime(tool.uptimeSeconds) : tool.state === "exited" ? `EXIT ${tool.exitCode ?? "--"}` : "STANDBY"}</div>
+          <div class="mono-cell" title="${escapeHtml(tool.cwd)}">${escapeHtml(middlePath(tool.cwd))}</div>
+          <div class="mono-cell col-autostart">${tool.autostart ? "ENABLED" : "DISABLED"}</div>
+          <div class="drag-cell" aria-hidden="true">${icon("grip")}</div>
+        </div>`;
+    }
+
+    function renderMatrix() {
+      const matrixScroll = $("#matrixScroll");
+      const scrollTop = matrixScroll.scrollTop;
+      const scrollLeft = matrixScroll.scrollLeft;
+      const filtering = Boolean(state.search.trim()) || state.filter !== "all";
+
+      const groups = state.groups.map((group) => {
+        const allTools = state.tools.filter((tool) => tool.group === group);
+        return { group, allTools, visibleTools: allTools.filter(matches) };
+      }).filter((entry) => !filtering || entry.visibleTools.length > 0);
+      const visibleTotal = groups.reduce((total, entry) => total + entry.visibleTools.length, 0);
+      const visibleTools = groups.flatMap((entry) => entry.visibleTools);
+      if (visibleTools.length && !visibleTools.some((tool) => tool.id === state.selectedId))
+        state.selectedId = visibleTools[0].id;
+
+      let html = groups.map((entry) => `
+        <div class="group-row" data-group-row data-group="${escapeHtml(entry.group)}">
+          <div class="group-row-title">${icon("chevron")}<span class="group-row-code">${escapeHtml(groupCode(entry.group))}</span><span class="group-row-name">${escapeHtml(entry.group)}</span></div>
+          <span class="group-row-count">${pad(entry.visibleTools.length)}${filtering ? ` / ${pad(entry.allTools.length)}` : ""} UNITS</span>
+        </div>
+        ${entry.visibleTools.map((tool) => toolRow(tool, state.tools.indexOf(tool) + 1)).join("")}`).join("");
+      if (!html) html = `<div class="empty-matrix">NO MATCHING APPLICATIONS</div>`;
+      $("#matrixContent").innerHTML = html;
+      $("#visibleCount").textContent = pad(visibleTotal);
+      $("#groupCount").textContent = pad(groups.length);
+      $("#footerStatus").textContent = `ORDER ${pad(state.tools.length)} / ${pad(state.tools.length)}`;
+      matrixScroll.scrollTop = scrollTop;
+      matrixScroll.scrollLeft = scrollLeft;
+      renderSummary();
+    }
+
+    function renderDossier() {
+      const tool = selectedTool();
+      if (!tool) return;
+      const index = state.tools.indexOf(tool) + 1;
+      const canStart = tool.state === "stopped" || tool.state === "exited";
+      const canStop = tool.state === "running";
+      const canRestart = tool.state !== "stopping";
+      $("#dossierHead").innerHTML = `
+        <div class="dossier-index">${pad(index)}</div>
+        <div class="dossier-identity">
+          <div class="dossier-kicker"><span>${escapeHtml(groupCode(tool.group))} / ${escapeHtml(tool.id.toUpperCase())}</span><span class="state-${tool.state}">${stateLabels[tool.state]}</span></div>
+          <h2>${escapeHtml(tool.name)}</h2>
+          <div class="dossier-path">${escapeHtml(tool.cwd)} · PID ${tool.pid ?? "----"} · UPTIME <span id="dossierUptime">${isActive(tool) ? formatUptime(tool.uptimeSeconds) : "--"}</span> · EXIT ${tool.exitCode ?? "--"}</div>
+        </div>
+        <div class="dossier-actions">
+          <button class="action-button primary" type="button" data-action="start-selected" data-tooltip="启动选中工具" aria-label="启动 ${escapeHtml(tool.name)}" ${canStart ? "" : "disabled"}>${icon("play")}<span class="action-label">启动</span></button>
+          <button class="action-button stop" type="button" data-action="stop-selected" data-tooltip="停止选中工具" aria-label="停止 ${escapeHtml(tool.name)}" ${canStop ? "" : "disabled"}>${icon("stop")}<span class="action-label">停止</span></button>
+          <button class="action-button" type="button" data-action="restart-selected" data-tooltip="重启选中工具" aria-label="重启 ${escapeHtml(tool.name)}" ${canRestart ? "" : "disabled"}>${icon("refresh")}<span class="action-label">重启</span></button>
+          <button class="icon-button" type="button" data-action="edit-selected" data-tooltip="编辑工具配置" aria-label="编辑工具配置">${icon("pencil")}</button>
+        </div>`;
+      $("#footerSelection").textContent = `SELECTED / ${tool.id.toUpperCase()}`;
+      renderDossierContent();
+    }
+
+    function renderDossierContent() {
+      const tool = selectedTool();
+      if (!tool) return;
+      $$("[data-tab]").forEach((button) => {
+        const active = button.dataset.tab === state.activeTab;
+        button.classList.toggle("active", active);
+        button.setAttribute("aria-selected", String(active));
+      });
+      if (state.activeTab === "manifest") renderManifest(tool);
+      else renderLog(tool);
+    }
+
+    function renderLog(tool) {
+      $("#dossierContent").innerHTML = `
+        <div class="log-view">
+          <div class="log-toolbar">
+            <div class="log-channel"><span class="status-dot"></span><span>LIVE RECORD</span><span>~/.local/state/tooldeck/logs/${escapeHtml(tool.id)}.log</span></div>
+            <label class="follow-control"><input id="followLog" type="checkbox" ${state.follow ? "checked" : ""}><span class="follow-box">${icon("check")}</span>跟随</label>
+            <button class="compact-button icon-only" type="button" data-action="reveal-log" data-tooltip="定位完整日志" aria-label="定位完整日志">${icon("external")}</button>
+            <button class="compact-button icon-only" type="button" data-action="clear-log" data-tooltip="清空当前显示" aria-label="清空当前显示">${icon("eraser")}</button>
+          </div>
+          <div class="log-lines" id="logLines" role="log" aria-live="polite"></div>
+        </div>`;
+      $("#followLog").addEventListener("change", (event) => {
+        state.follow = event.target.checked;
+        if (state.follow) $("#logLines").scrollTop = $("#logLines").scrollHeight;
+      });
+      renderLogLines(tool);
+    }
+
+    function renderLogLines(tool) {
+      const container = $("#logLines");
+      if (!container) return;
+      const visibleLogs = tool.logs.slice(tool.clearedAt);
+      if (!visibleLogs.length) {
+        container.innerHTML = `<div class="log-empty">DISPLAY BUFFER CLEAR / PERSISTENT RECORD RETAINED</div>`;
+      } else {
+        container.innerHTML = visibleLogs.map((entry) => `
+          <div class="log-line ${escapeHtml(entry.level)}"><span class="log-time">${escapeHtml(entry.time)}</span><span class="log-level">${escapeHtml(entry.level.toUpperCase())}</span><span class="log-message">${escapeHtml(entry.message)}</span></div>`).join("");
+      }
+      if (state.follow) container.scrollTop = container.scrollHeight;
+    }
+
+    function renderManifest(tool) {
+      const env = Object.entries(tool.env).map(([key, value]) => `${key}=${value}`).join("\n") || "0 VARIABLES";
+      $("#dossierContent").innerHTML = `
+        <div class="manifest-view">
+          <div class="manifest-cell"><div class="manifest-label">Group</div><div class="manifest-value">${escapeHtml(tool.group)}</div></div>
+          <div class="manifest-cell"><div class="manifest-label">Tool ID</div><div class="manifest-value">${escapeHtml(tool.id)}</div></div>
+          <div class="manifest-cell"><div class="manifest-label">Shell</div><div class="manifest-value">${escapeHtml(tool.shell)}</div></div>
+          <div class="manifest-cell"><div class="manifest-label">Autostart</div><div class="manifest-value">${tool.autostart ? "ENABLED" : "DISABLED"}</div></div>
+          <div class="manifest-cell"><div class="manifest-label">Stop signal</div><div class="manifest-value">${escapeHtml(tool.stopSignal)}</div></div>
+          <div class="manifest-cell"><div class="manifest-label">Stop timeout</div><div class="manifest-value">${escapeHtml(tool.stopTimeout)} SECONDS</div></div>
+          <div class="manifest-cell wide"><div class="manifest-label">Working directory</div><div class="manifest-value">${escapeHtml(tool.cwd)}</div></div>
+          <div class="manifest-cell wide"><div class="manifest-label">Command payload</div><div class="manifest-value wrap">${escapeHtml(tool.command)}</div></div>
+          <div class="manifest-cell wide"><div class="manifest-label">Environment</div><div class="manifest-value wrap">${escapeHtml(env)}</div></div>
+        </div>`;
+    }
+
+    function appendLog(tool, level, message) {
+      tool.logs.push(log(nowStamp(), level, message));
+      if (tool.id === state.selectedId && state.activeTab === "log") renderLogLines(tool);
+    }
+
+    function renderAll() {
+      renderMatrix();
+      renderDossier();
+    }
+
+    function toast(title, detail = "", tone = "info") {
+      const node = document.createElement("div");
+      node.className = `toast ${tone}`;
+      node.innerHTML = `<span class="toast-mark"></span><div class="toast-copy"><b>${escapeHtml(title)}</b><span>${escapeHtml(detail)}</span></div>`;
+      $("#toastRegion").appendChild(node);
+      window.setTimeout(() => node.remove(), 3200);
+    }
+
+    function askConfirm(title, body, label, callback) {
+      state.confirmAction = callback;
+      $("#confirmTitle").textContent = title;
+      $("#confirmBody").textContent = body;
+      $("#confirmAccept").textContent = label;
+      $("#confirmLayer").classList.add("open");
+      $("#confirmLayer").setAttribute("aria-hidden", "false");
+      window.setTimeout(() => $("#confirmAccept").focus(), 0);
+    }
+
+    function closeConfirm() {
+      state.confirmAction = null;
+      $("#confirmLayer").classList.remove("open");
+      $("#confirmLayer").setAttribute("aria-hidden", "true");
+    }
+
+    function startTool(tool) {
+      if (!tool || isActive(tool)) return;
+      tool.state = "running";
+      tool.pid = state.nextPid++;
+      tool.uptimeSeconds = 0;
+      tool.exitCode = null;
+      appendLog(tool, "command", `$ ${tool.command}`);
+      appendLog(tool, "info", `Process group registered with leader PID ${tool.pid}`);
+      renderAll();
+      toast(`${tool.name} 已启动`, `PID ${tool.pid} / ${tool.cwd}`);
+    }
+
+    function stopTool(tool, notify = true) {
+      if (!tool || tool.state !== "running") return;
+      tool.state = "stopping";
+      appendLog(tool, "warn", `Stop signal ${tool.stopSignal} sent to process group ${tool.pid}`);
+      renderAll();
+      window.setTimeout(() => {
+        tool.state = "stopped";
+        tool.exitCode = 0;
+        tool.pid = null;
+        appendLog(tool, "info", "Process tree stopped cleanly; persistent log retained");
+        renderAll();
+        if (notify) toast(`${tool.name} 已停止`, "进程树状态已提交");
+      }, 920);
+    }
+
+    function restartTool(tool) {
+      if (!tool || tool.state === "stopping") return;
+      if (!isActive(tool)) {
+        startTool(tool);
+        return;
+      }
+      const oldPid = tool.pid;
+      tool.state = "stopping";
+      appendLog(tool, "warn", `Restart requested; stopping process group ${oldPid}`);
+      renderAll();
+      window.setTimeout(() => {
+        tool.state = "running";
+        tool.pid = state.nextPid++;
+        tool.uptimeSeconds = 0;
+        appendLog(tool, "command", `$ ${tool.command}`);
+        appendLog(tool, "info", `Replacement process group active with leader PID ${tool.pid}`);
+        renderAll();
+        toast(`${tool.name} 已重启`, `PID ${oldPid} → ${tool.pid}`);
+      }, 980);
+    }
+
+    function stopAll() {
+      const active = state.tools.filter((tool) => tool.state === "running");
+      if (!active.length) {
+        toast("没有可停止的活动工具", "停止中的工具将自行完成", "warning");
+        return;
+      }
+      active.forEach((tool) => stopTool(tool, false));
+      toast("停止指令已分发", `${active.length} 个活动进程组`, "warning");
+    }
+
+    function openEditor(mode, tool = null) {
+      state.editorMode = mode;
+      state.editorOriginalId = tool?.id || "";
+      const imported = mode === "import";
+      const draft = tool || (imported ? {
+        id: "imported-script", name: "Imported Script", group: "未分组", cwd: "~/Projects/imported-script", command: "python main.py",
+        shell: "/bin/bash", stopSignal: "TERM", stopTimeout: 15, env: {}, autostart: false
+      } : {
+        id: "", name: "", group: "未分组", cwd: "~/Projects/", command: "", shell: "/bin/bash", stopSignal: "TERM", stopTimeout: 15, env: {}, autostart: false
+      });
+      $("#editorNumber").textContent = mode === "edit" ? pad(state.tools.indexOf(tool) + 1) : mode === "import" ? "IMP" : "NEW";
+      $("#editorKicker").textContent = mode === "edit" ? "UNIT CONFIGURATION / REVISION" : mode === "import" ? "UNIT REGISTRATION / IMPORT DRAFT" : "UNIT REGISTRATION / NEW RECORD";
+      $("#editorHeading").textContent = mode === "edit" ? "编辑工具" : mode === "import" ? "登记导入工具" : "添加工具";
+      $("#saveLabel").textContent = mode === "edit" ? "提交修订" : "写入档案";
+      $("#deleteButton").hidden = mode !== "edit";
+      $("#fieldName").value = draft.name;
+      $("#fieldId").value = draft.id;
+      $("#fieldId").readOnly = mode === "edit";
+      $("#fieldGroup").value = draft.group;
+      $("#fieldCwd").value = draft.cwd;
+      $("#fieldCommand").value = draft.command;
+      $("#fieldShell").value = draft.shell;
+      $("#fieldSignal").value = draft.stopSignal;
+      $("#fieldTimeout").value = draft.stopTimeout;
+      $("#fieldEnv").value = Object.entries(draft.env || {}).map(([key, value]) => `${key}=${value}`).join("\n");
+      $("#fieldAutostart").checked = Boolean(draft.autostart);
+      $("#formError").textContent = "";
+      $("#editorOverlay").classList.add("open");
+      $("#editorOverlay").setAttribute("aria-hidden", "false");
+      window.setTimeout(() => $("#fieldName").focus(), 20);
+    }
+
+    function closeEditor() {
+      $("#editorOverlay").classList.remove("open");
+      $("#editorOverlay").setAttribute("aria-hidden", "true");
+      $("#formError").textContent = "";
+    }
+
+    function parseEnvironment(value) {
+      const result = {};
+      const lines = value.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+      for (const line of lines) {
+        const index = line.indexOf("=");
+        if (index < 1) throw new Error(`环境变量缺少等号：${line}`);
+        const key = line.slice(0, index).trim();
+        if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error(`环境变量名称无效：${key}`);
+        result[key] = line.slice(index + 1).trim();
+      }
+      return result;
+    }
+
+    function saveEditor(event) {
+      event.preventDefault();
+      const name = $("#fieldName").value.trim();
+      const id = $("#fieldId").value.trim();
+      const group = $("#fieldGroup").value.trim() || "未分组";
+      const cwd = $("#fieldCwd").value.trim();
+      const command = $("#fieldCommand").value.trim();
+      const shell = $("#fieldShell").value.trim() || "/bin/bash";
+      const stopSignal = $("#fieldSignal").value;
+      const stopTimeout = Number($("#fieldTimeout").value);
+      let env;
+      let error = "";
+      if (!name) error = "工具名称不能为空。";
+      else if (!/^[a-z0-9][a-z0-9_-]*$/.test(id)) error = "工具 ID 只能使用小写字母、数字、下划线和连字符。";
+      else if (state.editorMode !== "edit" && state.tools.some((tool) => tool.id === id)) error = `工具 ID ${id} 已存在。`;
+      else if (!cwd) error = "工作目录不能为空。";
+      else if (!command) error = "启动命令不能为空。";
+      else if (!Number.isFinite(stopTimeout) || stopTimeout < 0.5) error = "停止等待必须是不小于 0.5 的数字。";
+      try { env = parseEnvironment($("#fieldEnv").value); } catch (caught) { error ||= caught.message; }
+      if (error) {
+        $("#formError").textContent = error;
+        return;
+      }
+
+      const values = { name, id, group, cwd, command, shell, stopSignal, stopTimeout, env, autostart: $("#fieldAutostart").checked };
+      if (state.editorMode === "edit") {
+        const tool = state.tools.find((item) => item.id === state.editorOriginalId);
+        Object.assign(tool, values, { id: tool.id });
+        if (!state.groups.includes(group)) state.groups.push(group);
+        state.selectedId = tool.id;
+        toast(`${tool.name} 已修订`, `配置档案 / ${tool.id}`);
+      } else {
+        const tool = { ...values, state: "stopped", pid: null, uptimeSeconds: 0, exitCode: null, logs: [log(nowStamp(), "info", "Unit configuration registered in prototype memory")], clearedAt: 0 };
+        state.tools.push(tool);
+        if (!state.groups.includes(group)) state.groups.push(group);
+        state.selectedId = tool.id;
+        toast(`${tool.name} 已登记`, `配置档案 / ${tool.id}`);
+      }
+      closeEditor();
+      renderAll();
+    }
+
+    function deleteSelected() {
+      const tool = state.tools.find((item) => item.id === state.editorOriginalId);
+      if (!tool) return;
+      askConfirm("删除工具记录", `将从展示稿内存中移除 ${tool.name}。日志与磁盘文件不会发生任何变化。`, "删除记录", () => {
+        const index = state.tools.indexOf(tool);
+        state.tools.splice(index, 1);
+        state.selectedId = state.tools[Math.max(0, index - 1)]?.id || "";
+        closeEditor();
+        renderAll();
+        toast("工具记录已移除", tool.id, "warning");
+      });
+    }
+
+    function updateMeters() {
+      ["cpu", "memory", "gpu"].forEach((name) => {
+        const value = state.metrics[name];
+        const meter = $(`#${name}Meter`);
+        meter.innerHTML = Array.from({ length: 6 }, (_, index) => `<i class="${value >= (index + 1) * 15 ? "on" : ""}" style="height:${8 + index * 5}px"></i>`).join("");
+        $(`#${name}Value`).textContent = `${value}%`;
+      });
+      $("#cpuDetail").textContent = `${(state.metrics.cpu * 0.12).toFixed(1)} / 12 THREADS`;
+      $("#memoryDetail").textContent = `${(32 * state.metrics.memory / 100).toFixed(1)} / 32.0 GB`;
+      $("#gpuDetail").textContent = `${(16 * state.metrics.gpu / 100).toFixed(1)} / 16.0 GB`;
+      $("#sampleStamp").textContent = `LOCAL / ${new Date().toLocaleTimeString("zh-CN", { hour12: false })}`;
+    }
+
+    function drawTelemetry() {
+      const canvas = $("#telemetryCanvas");
+      const rect = canvas.getBoundingClientRect();
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = Math.max(1, Math.floor(rect.width * ratio));
+      canvas.height = Math.max(1, Math.floor(rect.height * ratio));
+      const ctx = canvas.getContext("2d");
+      ctx.scale(ratio, ratio);
+      const width = rect.width;
+      const height = rect.height;
+      ctx.clearRect(0, 0, width, height);
+      ctx.strokeStyle = "#bcc1ba";
+      ctx.lineWidth = 1;
+      for (let x = 0.5; x < width; x += 36) { ctx.beginPath(); ctx.moveTo(x, 18); ctx.lineTo(x, height); ctx.stroke(); }
+      for (let y = 28.5; y < height; y += 14) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(width, y); ctx.stroke(); }
+      const colors = { cpu: "#c7432c", memory: "#217f6b", gpu: "#151713" };
+      Object.entries(state.history).forEach(([name, points]) => {
+        ctx.beginPath();
+        ctx.strokeStyle = colors[name];
+        ctx.lineWidth = name === "gpu" ? 1 : 1.6;
+        points.forEach((value, index) => {
+          const x = index * width / (points.length - 1);
+          const y = height - 5 - (value / 100) * (height - 15);
+          if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+      });
+    }
+
+    function sampleMetrics() {
+      if (state.samplingPaused) return;
+      const active = state.tools.filter(isActive).length;
+      state.metrics.cpu = Math.max(12, Math.min(92, Math.round(25 + active * 5 + (Math.random() - 0.5) * 16)));
+      state.metrics.memory = Math.max(38, Math.min(88, Math.round(56 + active * 2.2 + (Math.random() - 0.5) * 5)));
+      state.metrics.gpu = Math.max(4, Math.min(96, Math.round(18 + active * 9 + (Math.random() - 0.5) * 22)));
+      Object.keys(state.history).forEach((name) => {
+        state.history[name].push(state.metrics[name]);
+        state.history[name].shift();
+      });
+      updateMeters();
+      drawTelemetry();
+    }
+
+    function tickClock() {
+      const now = new Date();
+      $("#clockDate").textContent = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+      $("#clockTime").textContent = now.toLocaleTimeString("zh-CN", { hour12: false });
+      state.tools.filter(isActive).forEach((tool) => { tool.uptimeSeconds += 1; });
+      $$("[data-uptime-id]").forEach((node) => {
+        const tool = state.tools.find((item) => item.id === node.dataset.uptimeId);
+        if (tool && isActive(tool)) node.textContent = formatUptime(tool.uptimeSeconds);
+      });
+      const tool = selectedTool();
+      if (tool && $("#dossierUptime")) $("#dossierUptime").textContent = isActive(tool) ? formatUptime(tool.uptimeSeconds) : "--";
+    }
+
+    const workspace = $("#workspace");
+    const workspaceDivider = $("#workspaceDivider");
+    let splitDrag = null;
+
+    workspaceDivider.addEventListener("pointerdown", (event) => {
+      if (event.button !== 0) return;
+      event.preventDefault();
+      workspaceDivider.focus({ preventScroll: true });
+      splitDrag = { pointerId: event.pointerId, startX: event.clientX, startRatio: state.splitRatio };
+      workspaceDivider.setPointerCapture(event.pointerId);
+      workspace.classList.add("is-resizing");
+    });
+
+    workspaceDivider.addEventListener("pointermove", (event) => {
+      if (!splitDrag || event.pointerId !== splitDrag.pointerId) return;
+      const { availableWidth } = getSplitBounds();
+      applyWorkspaceSplit(splitDrag.startRatio + (event.clientX - splitDrag.startX) / availableWidth * 100);
+    });
+
+    const finishSplitDrag = (event) => {
+      if (!splitDrag || event.pointerId !== splitDrag.pointerId) return;
+      splitDrag = null;
+      workspace.classList.remove("is-resizing");
+      if (workspaceDivider.hasPointerCapture(event.pointerId)) workspaceDivider.releasePointerCapture(event.pointerId);
+    };
+    workspaceDivider.addEventListener("pointerup", finishSplitDrag);
+    workspaceDivider.addEventListener("pointercancel", finishSplitDrag);
+    workspaceDivider.addEventListener("lostpointercapture", () => {
+      splitDrag = null;
+      workspace.classList.remove("is-resizing");
+    });
+    workspaceDivider.addEventListener("dblclick", () => applyWorkspaceSplit(60));
+    workspaceDivider.addEventListener("keydown", (event) => {
+      const step = event.shiftKey ? 5 : 1;
+      if (event.key === "ArrowLeft") applyWorkspaceSplit(state.splitRatio - step);
+      else if (event.key === "ArrowRight") applyWorkspaceSplit(state.splitRatio + step);
+      else if (event.key === "Home") applyWorkspaceSplit(getSplitBounds().minRatio);
+      else if (event.key === "End") applyWorkspaceSplit(getSplitBounds().maxRatio);
+      else return;
+      event.preventDefault();
+    });
+
+    $("#toolSearch").addEventListener("input", (event) => {
+      state.search = event.target.value;
+      renderAll();
+    });
+
+    $(".filter-control").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-filter]");
+      if (!button) return;
+      state.filter = button.dataset.filter;
+      $$("[data-filter]").forEach((item) => {
+        const active = item === button;
+        item.classList.toggle("active", active);
+        item.setAttribute("aria-pressed", String(active));
+      });
+      renderAll();
+    });
+
+    $("#matrixScroll").addEventListener("click", (event) => {
+      const row = event.target.closest("[data-tool-id]");
+      if (!row) return;
+      state.selectedId = row.dataset.toolId;
+      renderAll();
+    });
+
+    $("#matrixScroll").addEventListener("keydown", (event) => {
+      const row = event.target.closest("[data-tool-id]");
+      if (!row || !["Enter", " "].includes(event.key)) return;
+      event.preventDefault();
+      state.selectedId = row.dataset.toolId;
+      renderAll();
+    });
+
+    $("#matrixScroll").addEventListener("dragstart", (event) => {
+      const row = event.target.closest("[data-tool-id]");
+      if (!row) return;
+      if (state.search.trim() || state.filter !== "all") {
+        event.preventDefault();
+        toast("筛选期间排序已锁定", "清除搜索和状态筛选后可重新排序", "warning");
+        return;
+      }
+      state.draggingId = row.dataset.toolId;
+      row.classList.add("dragging");
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", state.draggingId);
+    });
+
+    $("#matrixScroll").addEventListener("dragend", () => {
+      state.draggingId = null;
+      $$(".dragging, .drag-over").forEach((node) => node.classList.remove("dragging", "drag-over"));
+    });
+
+    $("#matrixScroll").addEventListener("dragover", (event) => {
+      const target = event.target.closest("[data-tool-id], [data-group-row]");
+      if (!target || !state.draggingId) return;
+      event.preventDefault();
+      $$(".drag-over").forEach((node) => node.classList.remove("drag-over"));
+      target.classList.add("drag-over");
+      event.dataTransfer.dropEffect = "move";
+    });
+
+    $("#matrixScroll").addEventListener("drop", (event) => {
+      const targetRow = event.target.closest("[data-tool-id]");
+      const targetGroup = event.target.closest("[data-group-row]");
+      if (!state.draggingId || (!targetRow && !targetGroup)) return;
+      event.preventDefault();
+      if (targetRow?.dataset.toolId === state.draggingId) return;
+      const sourceIndex = state.tools.findIndex((tool) => tool.id === state.draggingId);
+      const source = state.tools[sourceIndex];
+      state.tools.splice(sourceIndex, 1);
+      if (targetRow) {
+        const targetIndex = state.tools.findIndex((tool) => tool.id === targetRow.dataset.toolId);
+        source.group = targetRow.dataset.group;
+        state.tools.splice(Math.max(0, targetIndex), 0, source);
+      } else {
+        source.group = targetGroup.dataset.group;
+        const indices = state.tools.map((tool, index) => tool.group === source.group ? index : -1).filter((index) => index >= 0);
+        state.tools.splice(indices.length ? Math.max(...indices) + 1 : state.tools.length, 0, source);
+      }
+      state.selectedId = source.id;
+      state.draggingId = null;
+      renderAll();
+      toast("工具排序已更新", `${source.name} / ${source.group}`);
+    });
+
+    document.addEventListener("click", (event) => {
+      const tab = event.target.closest("[data-tab]");
+      if (tab) {
+        state.activeTab = tab.dataset.tab;
+        renderDossierContent();
+        return;
+      }
+      const action = event.target.closest("[data-action]")?.dataset.action;
+      if (!action) return;
+      const tool = selectedTool();
+      if (action === "add") openEditor("add");
+      if (action === "import") { openEditor("import"); toast("导入路径已转换为登记草稿", "展示稿不会读取本地文件"); }
+      if (action === "reload") { appendLog(tool, "info", "Configuration index reloaded from prototype memory"); renderMatrix(); toast("配置索引已重载", `${state.tools.length} 个工具记录`); }
+      if (action === "open-config") toast("配置目录", "~/.config/tooldeck/tools.d/");
+      if (action === "stop-all") askConfirm("停止全部活动工具", `将向 ${state.tools.filter((item) => item.state === "running").length} 个活动进程组发送停止指令。`, "停止全部", stopAll);
+      if (action === "toggle-sampling") {
+        state.samplingPaused = !state.samplingPaused;
+        $("#linkLabel").textContent = state.samplingPaused ? "采样暂停" : "采样连接";
+        $("#sampleToggle").innerHTML = icon(state.samplingPaused ? "play" : "pause");
+        $("#sampleToggle").dataset.tooltip = state.samplingPaused ? "恢复系统采样" : "暂停系统采样";
+        $("#sampleToggle").setAttribute("aria-label", state.samplingPaused ? "恢复系统采样" : "暂停系统采样");
+        toast(state.samplingPaused ? "系统采样已暂停" : "系统采样已恢复", "历史轨迹保留");
+      }
+      if (action === "start-selected") startTool(tool);
+      if (action === "stop-selected") askConfirm("停止活动工具", `将向 ${tool.name} 的进程组 ${tool.pid} 发送 ${tool.stopSignal} 信号。`, "发送停止信号", () => stopTool(tool));
+      if (action === "restart-selected") restartTool(tool);
+      if (action === "edit-selected") openEditor("edit", tool);
+      if (action === "reveal-log") toast("已定位完整日志", `~/.local/state/tooldeck/logs/${tool.id}.log`);
+      if (action === "clear-log") { tool.clearedAt = tool.logs.length; renderLogLines(tool); toast("当前显示已清空", "持久化日志未删除"); }
+      if (action === "close-editor") closeEditor();
+      if (action === "delete-tool") deleteSelected();
+      if (action === "cancel-confirm") closeConfirm();
+    });
+
+    $("#confirmAccept").addEventListener("click", () => {
+      const callback = state.confirmAction;
+      closeConfirm();
+      if (callback) callback();
+    });
+
+    $("#toolForm").addEventListener("submit", saveEditor);
+
+    $("#editorOverlay").addEventListener("mousedown", (event) => {
+      if (event.target === $("#editorOverlay")) closeEditor();
+    });
+    $("#confirmLayer").addEventListener("mousedown", (event) => {
+      if (event.target === $("#confirmLayer")) closeConfirm();
+    });
+
+    document.addEventListener("keydown", (event) => {
+      const editable = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+      if (event.key === "/" && !editable) {
+        event.preventDefault();
+        $("#toolSearch").focus();
+      }
+      if (event.key === "Escape") {
+        if ($("#confirmLayer").classList.contains("open")) closeConfirm();
+        else if ($("#editorOverlay").classList.contains("open")) closeEditor();
+      }
+      if (event.ctrlKey && event.key === "Enter" && !editable) startTool(selectedTool());
+    });
+
+    new ResizeObserver(drawTelemetry).observe($("#telemetryCanvas"));
+    new ResizeObserver(() => applyWorkspaceSplit()).observe(workspace);
+    window.addEventListener("resize", () => applyWorkspaceSplit());
+    applyWorkspaceSplit();
+    renderAll();
+    updateMeters();
+    drawTelemetry();
+    tickClock();
+    window.setInterval(tickClock, 1000);
+    window.setInterval(sampleMetrics, 1800);
+  </script>
+</body>
+</html>

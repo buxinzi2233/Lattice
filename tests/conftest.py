@@ -27,6 +27,8 @@ def isolated_xdg(tmp_path, monkeypatch):
 @pytest.fixture(scope="session")
 def qapp():
     from PySide6.QtWidgets import QApplication
+    from tooldeck.gui.app import register_fonts
 
     app = QApplication.instance() or QApplication([])
+    register_fonts()
     yield app

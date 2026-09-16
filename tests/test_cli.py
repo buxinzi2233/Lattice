@@ -9,6 +9,7 @@ import tempfile
 from tooldeck import paths
 from tooldeck.cli import main
 from tooldeck.config import load_file
+from tooldeck.layout import load as load_layout
 
 
 def python_command(code: str) -> str:
@@ -37,9 +38,11 @@ def test_cli_add_list_start_stop_remove(capsys):
     assert "实验服务" in output
     assert main(["edit", "demo", "--group", "常驻服务"]) == 0
     assert load_file(paths.tool_toml("demo")).group == "常驻服务"
+    assert load_layout(paths.layout_json()).tool_order == {"常驻服务": ["demo"]}
     assert main(["start", "demo"]) == 0
     assert main(["stop", "demo"]) == 0
     assert main(["remove", "demo"]) == 0
+    assert load_layout(paths.layout_json()).tool_order == {}
 
 
 def test_cli_reports_unknown_tool(capsys):

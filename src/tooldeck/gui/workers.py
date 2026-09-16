@@ -1,6 +1,7 @@
 """Qt adapters that keep process and log I/O away from the scene thread."""
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 import time
 from pathlib import Path
@@ -8,7 +9,11 @@ from typing import Literal
 
 from PySide6.QtCore import QObject, QThread, QTimer, Signal, Slot
 
-from tooldeck.config import ToolConfig
+from tooldeck.application import ImportPlan, ToolDeckApplication
+from tooldeck.launchers import LaunchAnalysis
+from tooldeck.catalog import CatalogError, CatalogSnapshot, ToolCatalog
+from tooldeck.config import ConfigError, ToolConfig
+from tooldeck.layout import LayoutError
 from tooldeck.procs import ProcManager, ProcessError, ToolStatus
 from tooldeck.tailer import LogBatch, LogTailer
 
@@ -36,17 +41,67 @@ class StatusSnapshot:
     errors: tuple[str, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class CatalogRequest:
+    request_id: int
+    operation: Callable[[ToolDeckApplication], CatalogSnapshot]
+
+
+@dataclass(frozen=True, slots=True)
+class CatalogResult:
+    request_id: int
+    snapshot: CatalogSnapshot | None
+    error: str
+
+
+QueryValue = ImportPlan | LaunchAnalysis
+
+
+@dataclass(frozen=True, slots=True)
+class QueryRequest:
+    request_id: int
+    operation: Callable[[ToolDeckApplication], QueryValue]
+
+
+@dataclass(frozen=True, slots=True)
+class QueryResult:
+    request_id: int
+    value: QueryValue | None
+    error: str
+
+
 class ProcessWorker(QObject):
+    queryCompleted = Signal(object)
+    catalogCompleted = Signal(object)
     polled = Signal()
     snapshot = Signal(object)
     completed = Signal(object)
 
-    def __init__(self) -> None:
+    def __init__(self, application: ToolDeckApplication) -> None:
         super().__init__()
-        self.manager = ProcManager()
+        self.application = application
+        self.manager = application.runtime
         self.tools: dict[str, ToolConfig] = {}
         self.waiting: dict[str, OperationRequest] = {}
         self.deadlines: dict[str, float] = {}
+
+    @Slot(object)
+    def query(self, request: QueryRequest) -> None:
+        try:
+            self.queryCompleted.emit(QueryResult(request.request_id, request.operation(self.application), ""))
+        except (CatalogError, ConfigError, LayoutError, ProcessError, OSError) as exc:
+            self.queryCompleted.emit(QueryResult(request.request_id, None, str(exc)))
+
+    @Slot(object)
+    def update_catalog(self, request: CatalogRequest) -> None:
+        try:
+            snapshot = request.operation(self.application)
+        except (CatalogError, ConfigError, LayoutError, ProcessError, OSError) as exc:
+            self.catalogCompleted.emit(CatalogResult(request.request_id, None, str(exc)))
+            return
+        self.tools = dict(snapshot.tools)
+        self.catalogCompleted.emit(CatalogResult(request.request_id, snapshot, ""))
+        self.refresh()
 
     @Slot(object)
     def configure(self, tools: dict[str, ToolConfig]) -> None:
@@ -57,13 +112,17 @@ class ProcessWorker(QObject):
     def operate(self, request: OperationRequest) -> None:
         try:
             if request.action == "start":
-                self.manager.start(request.tool)
+                self.application.start(request.tool.id)
                 self.completed.emit(OperationResult(request.request_id, request.tool.id, request.action, ""))
             else:
-                self.manager.stop_begin(request.tool)
+                if request.action == "restart":
+                    report = self.application.preflight_tool(request.tool)
+                    if report.blocking:
+                        raise ConfigError("；".join(report.blocking_messages))
+                self.application.stop_begin(request.tool.id)
                 self.waiting[request.tool.id] = request
                 self.deadlines[request.tool.id] = time.monotonic() + request.tool.stop_timeout + 6
-        except (ProcessError, OSError) as exc:
+        except (ConfigError, ProcessError, OSError) as exc:
             self.completed.emit(OperationResult(request.request_id, request.tool.id, request.action, str(exc)))
         self.refresh()
 
@@ -74,7 +133,10 @@ class ProcessWorker(QObject):
 
     @Slot()
     def refresh(self) -> None:
-        with self.manager.snapshot_groups():
+        if isinstance(self.manager, ProcManager):
+            with self.manager.snapshot_groups():
+                self._refresh_snapshot()
+        else:
             self._refresh_snapshot()
 
     def _refresh_snapshot(self) -> None:
@@ -82,28 +144,28 @@ class ProcessWorker(QObject):
         statuses: dict[str, ToolStatus] = {}
         try:
             self.manager.tick()
-        except (ProcessError, OSError) as exc:
+        except (ConfigError, ProcessError, OSError) as exc:
             errors.append(str(exc))
         for tool_id in self.tools:
             try:
                 status = self.manager.status(tool_id)
-            except (ProcessError, OSError) as exc:
+            except (ConfigError, ProcessError, OSError) as exc:
                 status = ToolStatus(tool_id, "error", message=str(exc))
                 errors.append(str(exc))
             request = self.waiting.get(tool_id)
             if request is not None and status.active and time.monotonic() > self.deadlines[tool_id]:
                 self.waiting.pop(tool_id)
                 self.completed.emit(OperationResult(request.request_id, tool_id, request.action, "停止进程树超过期限，请检查进程状态"))
-            elif request is not None and (status.state == "error" or status.message):
+            elif request is not None and (status.state == "error"):
                 self.waiting.pop(tool_id)
                 self.completed.emit(OperationResult(request.request_id, tool_id, request.action, status.message or "状态不可读"))
             elif request is not None and not status.active:
                 self.waiting.pop(tool_id)
                 try:
                     if request.action == "restart":
-                        status = self.manager.start(request.tool)
+                        status = self.application.start(request.tool.id)
                     self.completed.emit(OperationResult(request.request_id, tool_id, request.action, ""))
-                except (ProcessError, OSError) as exc:
+                except (ConfigError, ProcessError, OSError) as exc:
                     self.completed.emit(OperationResult(request.request_id, tool_id, request.action, str(exc)))
             if tool_id not in self.waiting:
                 self.deadlines.pop(tool_id, None)
@@ -113,6 +175,10 @@ class ProcessWorker(QObject):
 
 class ProcessService(QObject):
     """Serialize lifecycle requests and coalesce polling before crossing threads."""
+    queryRequested = Signal(object)
+    queryCompleted = Signal(object)
+    catalogRequested = Signal(object)
+    catalogCompleted = Signal(object)
     configured = Signal(object)
     requested = Signal(object)
     poll = Signal()
@@ -120,10 +186,14 @@ class ProcessService(QObject):
     completed = Signal(object)
     pendingChanged = Signal()
 
-    def __init__(self, parent: QObject) -> None:
+    def __init__(self, parent: QObject, application: ToolDeckApplication) -> None:
         super().__init__(parent)
         self.thread = QThread(self)
-        self.worker = ProcessWorker()
+        self.worker = ProcessWorker(application)
+        self.queryRequested.connect(self.worker.query)
+        self.worker.queryCompleted.connect(self.queryCompleted)
+        self.catalogRequested.connect(self.worker.update_catalog)
+        self.worker.catalogCompleted.connect(self.catalogCompleted)
         self.worker.moveToThread(self.thread)
         self.thread.finished.connect(self.worker.deleteLater)
         self.configured.connect(self.worker.configure)
@@ -136,6 +206,16 @@ class ProcessService(QObject):
         self._serial = 0
         self._polling = False
         self.thread.start()
+
+    def request_query(self, operation: Callable[[ToolDeckApplication], QueryValue]) -> int:
+        self._serial += 1
+        self.queryRequested.emit(QueryRequest(self._serial, operation))
+        return self._serial
+
+    def request_catalog(self, operation: Callable[[ToolDeckApplication], CatalogSnapshot]) -> int:
+        self._serial += 1
+        self.catalogRequested.emit(CatalogRequest(self._serial, operation))
+        return self._serial
 
     def configure(self, tools: dict[str, ToolConfig]) -> None:
         self.configured.emit(dict(tools))
@@ -170,7 +250,10 @@ class ProcessService(QObject):
         self.completed.emit(result)
 
     def shutdown(self) -> None:
-        self.worker.manager.close()
+        if isinstance(self.worker.manager, ProcManager):
+            self.worker.manager.close()
+        if isinstance(self.worker.application.catalog, ToolCatalog):
+            self.worker.application.catalog.close()
         self.thread.quit()
         if not self.thread.wait(6000):
             raise ProcessError("进程控制线程未在 6 秒内完成当前操作")

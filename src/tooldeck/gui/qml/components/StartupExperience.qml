@@ -8,23 +8,37 @@ Item {
     required property var bridge
     property bool previewMode: false
     property bool showing: false
+    property bool closing: false
+    property real revealProgress: 0
     signal closed()
 
     function show(preview) {
+        dismissAnimation.stop()
         previewMode = Boolean(preview)
+        closing = false
         progressBar.width = 0
+        revealProgress = 0
         showing = true
         visible = true
-        opacity = 1
+        opacity = 0
+        revealAnimation.restart()
         progress.restart()
     }
 
     function dismiss() {
-        if (!visible)
+        if (!visible || closing)
             return
+        closing = true
         progress.stop()
+        dismissAnimation.restart()
+    }
+
+    function finishDismiss() {
         visible = false
         showing = false
+        closing = false
+        opacity = 0
+        revealProgress = 0
         if (!previewMode)
             bridge.markStartupShown()
         closed()
@@ -41,7 +55,7 @@ Item {
         anchors.fill: parent
         anchors.margins: 24
         color: "transparent"
-        border.width: 1
+        border.width: Theme.lineWidth
         border.color: Theme.telemetryDark
     }
 
@@ -52,7 +66,7 @@ Item {
             y: 24
             width: 1
             height: startup.height - 48
-            color: index % 3 === 0 ? "#1d4f4a" : "#17211f"
+            color: index % 3 === 0 ? Theme.startupGrid : Theme.startupGridDim
             opacity: 0.52
         }
     }
@@ -65,9 +79,11 @@ Item {
         anchors.leftMargin: 72
         anchors.rightMargin: 72
         height: Math.min(460, parent.height - 120)
-        color: "#121815"
-        border.width: 1
+        color: Theme.startupPanel
+        border.width: Theme.lineWidth
         border.color: Theme.lineDark
+        opacity: 0.18 + startup.revealProgress * 0.82
+        transform: Translate { y: (1 - startup.revealProgress) * Theme.shiftMedium }
 
         RowLayout {
             anchors.fill: parent
@@ -78,7 +94,7 @@ Item {
                 Layout.preferredWidth: Math.min(420, panel.width * 0.42)
                 Layout.fillHeight: true
 
-                Rectangle { anchors.fill: parent; color: "#0f1311"; border.width: 1; border.color: Theme.telemetryDark }
+                Rectangle { anchors.fill: parent; color: Theme.startupCanvas; border.width: Theme.lineWidth; border.color: Theme.telemetryDark }
                 Image {
                     id: officialImage
                     anchors.fill: parent
@@ -92,15 +108,18 @@ Item {
                     visible: status === Image.Ready
                 }
                 Canvas {
+                    id: fallbackGraphic
                     anchors.fill: parent
                     visible: !officialImage.visible
+                    onWidthChanged: requestPaint()
+                    onHeightChanged: requestPaint()
                     onPaint: {
                         var ctx = getContext("2d")
                         ctx.reset()
-                        ctx.fillStyle = "#15201d"
+                        ctx.fillStyle = Theme.startupCanvasFill
                         for (var y = 0; y < height; y += 18)
                             ctx.fillRect(0, y, width, 1)
-                        ctx.strokeStyle = "#16b8a6"
+                        ctx.strokeStyle = Theme.telemetry
                         ctx.lineWidth = 2
                         ctx.beginPath()
                         ctx.moveTo(width * 0.5, 32)
@@ -116,6 +135,12 @@ Item {
                         ctx.lineTo(78, height * 0.5)
                         ctx.closePath()
                         ctx.stroke()
+                    }
+
+                    Connections {
+                        target: Theme
+                        function onStartupCanvasFillChanged() { fallbackGraphic.requestPaint() }
+                        function onTelemetryChanged() { fallbackGraphic.requestPaint() }
                     }
                 }
                 Text {
@@ -160,15 +185,36 @@ Item {
     }
 
     Rectangle {
-        width: parent.width
+        x: -180
+        width: 180
         height: 2
         y: 24
         color: Theme.telemetry
         opacity: 0.42
-        SequentialAnimation on x {
-            loops: Animation.Infinite
-            NumberAnimation { from: -startup.width; to: startup.width; duration: 1400 }
+        transform: Translate {
+            SequentialAnimation on x {
+                objectName: "startupScannerAnimation"
+                running: startup.visible && !startup.closing
+                loops: Animation.Infinite
+                NumberAnimation { from: 0; to: startup.width + 360; duration: 1800; easing.type: Easing.Linear }
+                PauseAnimation { duration: 320 }
+            }
         }
+    }
+
+    ParallelAnimation {
+        id: revealAnimation
+        objectName: "startupRevealAnimation"
+        NumberAnimation { target: startup; property: "opacity"; from: 0; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
+        NumberAnimation { target: startup; property: "revealProgress"; from: 0; to: 1; duration: Theme.slow; easing.type: Theme.easeEnter }
+    }
+
+    ParallelAnimation {
+        id: dismissAnimation
+        objectName: "startupDismissAnimation"
+        NumberAnimation { target: startup; property: "opacity"; to: 0; duration: Theme.normal; easing.type: Theme.easeExit }
+        NumberAnimation { target: startup; property: "revealProgress"; to: 0.72; duration: Theme.normal; easing.type: Theme.easeExit }
+        onFinished: startup.finishDismiss()
     }
 
     NumberAnimation {

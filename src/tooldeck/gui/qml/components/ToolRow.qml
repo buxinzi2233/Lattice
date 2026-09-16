@@ -34,12 +34,34 @@ ItemDelegate {
         Behavior on color { ColorAnimation { duration: Theme.fast } }
 
         Rectangle {
+            id: selectionRail
             anchors.left: parent.left
             anchors.top: parent.top
             anchors.bottom: parent.bottom
-            width: control.selected ? 4 : 2
-            color: control.selected ? Theme.command : control.stateColor
-            Behavior on width { NumberAnimation { duration: Theme.fast } }
+            width: 2
+            color: control.stateColor
+            opacity: control.selected ? 0 : 1
+
+            Behavior on color { ColorAnimation { duration: Theme.normal } }
+            Behavior on opacity { NumberAnimation { duration: Theme.fast; easing.type: Theme.easeStandard } }
+        }
+
+        Rectangle {
+            anchors.left: parent.left
+            anchors.top: parent.top
+            anchors.bottom: parent.bottom
+            width: 4
+            color: Theme.command
+            opacity: control.selected ? 1 : 0
+            transform: Scale {
+                origin.x: 0
+                origin.y: selectionRail.height / 2
+                xScale: 1
+                yScale: control.selected ? 1 : 0.55
+                Behavior on yScale { NumberAnimation { duration: Theme.normal; easing.type: Theme.easeEnter } }
+            }
+
+            Behavior on opacity { NumberAnimation { duration: Theme.fast; easing.type: Theme.easeStandard } }
         }
 
         Rectangle {
@@ -52,6 +74,11 @@ ItemDelegate {
     }
 
     contentItem: Item {
+        transform: Translate {
+            x: control.selected ? 2 : control.hovered ? 1 : 0
+            Behavior on x { NumberAnimation { duration: Theme.normal; easing.type: Theme.easeStandard } }
+        }
+
         Text {
             id: sequence
             anchors.left: parent.left
@@ -102,6 +129,7 @@ ItemDelegate {
             font.family: Theme.sans
             font.pixelSize: Theme.sp(10)
             font.weight: Font.DemiBold
+            onTextChanged: statePulse.restart()
         }
 
         Text {
@@ -132,10 +160,15 @@ ItemDelegate {
             anchors.rightMargin: 14
             anchors.bottom: parent.bottom
             anchors.bottomMargin: 11
-            text: control.toolState === "running" ? control.uptimeText : "STANDBY"
+            text: control.toolState === "running" ? control.uptimeText : control.toolState === "starting" ? "STARTING" : control.toolState === "unready" ? "TIMEOUT" : control.toolState === "stopping" ? "STOPPING" : "STANDBY"
             color: Theme.faint
             font.family: Theme.mono
             font.pixelSize: Theme.sp(9)
         }
+    }
+
+    SequentialAnimation {
+        id: statePulse
+        NumberAnimation { target: stateText; property: "opacity"; from: 0.48; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
     }
 }

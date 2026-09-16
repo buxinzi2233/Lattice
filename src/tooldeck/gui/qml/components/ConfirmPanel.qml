@@ -30,13 +30,13 @@ Popup {
     padding: 0
     closePolicy: Popup.CloseOnEscape
 
-    Overlay.modal: Rectangle { color: "#990d100e" }
+    Overlay.modal: Rectangle { color: Theme.scrim }
 
     background: Rectangle {
         color: Theme.paperRaised
-        border.width: 1
+        border.width: Theme.lineWidth
         border.color: Theme.ink
-        radius: 2
+        radius: Theme.radiusSmall
     }
 
     contentItem: ColumnLayout {
@@ -102,9 +102,14 @@ Popup {
 
     enter: Transition {
         ParallelAnimation {
-            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.normal }
-            NumberAnimation { property: "scale"; from: 0.96; to: 1; duration: Theme.normal; easing.type: Easing.OutCubic }
+            NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
+            NumberAnimation { property: "scale"; from: 0.94; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
         }
     }
-    exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: Theme.fast } }
+    exit: Transition {
+        ParallelAnimation {
+            NumberAnimation { property: "opacity"; to: 0; duration: Theme.fast; easing.type: Theme.easeExit }
+            NumberAnimation { property: "scale"; to: 0.98; duration: Theme.fast; easing.type: Theme.easeExit }
+        }
+    }
 }

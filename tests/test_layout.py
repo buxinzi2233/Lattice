@@ -81,3 +81,24 @@ def test_reorder_disabled_during_filter(qapp):
     assert bridge.moveTool("one", "A", 1) is False
     assert [bridge.model.get(row)["toolId"] for row in range(1)] == ["one"]
     bridge.shutdown()
+
+
+def test_bridge_preserves_raw_group_keys_when_label_matches_ungrouped(qapp):
+    save(ToolConfig("loose", "Loose", "true", "/tmp"))
+    save(ToolConfig("named", "Named", "true", "/tmp", group="未分组"))
+    bridge = AppBridge(manager=FixedManager(), auto_start_timers=False)
+
+    headers = [
+        bridge.model.getRow(row)
+        for row in range(bridge.model.rowCount())
+        if bridge.model.getRow(row)["rowType"] == "group"
+    ]
+    assert [(row["groupKey"], row["groupName"]) for row in headers] == [
+        ("未分组", "未分组（自定义分组）"),
+        ("", "未分组"),
+    ]
+    assert bridge.setGroupCollapsed("", True) is True
+    assert bridge.setGroupCollapsed("未分组", False) is True
+    assert bridge.moveTool("loose", "未分组", 1) is True
+    assert load_file(paths.tool_toml("loose")).group == "未分组"
+    bridge.shutdown()

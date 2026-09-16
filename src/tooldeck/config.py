@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Mapping
+from typing import Literal, Mapping
 
 from . import paths
+from .storage import atomic_create_text, atomic_write_text
 from .util import valid_id
 
 
@@ -33,6 +33,29 @@ class ConfigIssue:
     message: str
 
 
+LaunchMode = Literal["argv"]
+ReadinessMode = Literal["auto", "process", "http", "tcp"]
+
+
+@dataclass(frozen=True, slots=True)
+class LaunchConfig:
+    mode: LaunchMode
+    detector: str
+    source: str
+    argv: tuple[str, ...]
+    interpreter: str = ""
+    managed_environment: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ReadinessConfig:
+    mode: ReadinessMode = "auto"
+    grace_seconds: float = 3.0
+    timeout_seconds: float = 120.0
+    health_url: str = ""
+    health_port: int | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class ToolConfig:
     id: str
@@ -45,6 +68,8 @@ class ToolConfig:
     stop_signal: str = "TERM"
     stop_timeout: float = 10.0
     group: str = ""
+    launch: LaunchConfig | None = None
+    readiness: ReadinessConfig = field(default_factory=ReadinessConfig)
 
     @classmethod
     def from_mapping(cls, tool_id: str, raw: Mapping[str, object]) -> "ToolConfig":
@@ -108,6 +133,86 @@ class ToolConfig:
         if not 0 <= stop_timeout <= 3600:
             raise ConfigError("stop_timeout 必须在 0 到 3600 秒之间")
 
+        launch_raw = raw.get("launch")
+        launch: LaunchConfig | None = None
+        if launch_raw is not None:
+            if not isinstance(launch_raw, dict):
+                raise ConfigError("launch 必须是 TOML 表")
+            mode = launch_raw.get("mode", "argv")
+            if mode != "argv":
+                raise ConfigError("launch.mode 仅支持 argv")
+            detector = launch_raw.get("detector")
+            source = launch_raw.get("source")
+            if not isinstance(detector, str) or not detector.strip() or "\x00" in detector:
+                raise ConfigError("launch.detector 必须是非空字符串")
+            if not isinstance(source, str) or not source.strip() or "\x00" in source:
+                raise ConfigError("launch.source 必须是非空字符串")
+            argv_raw = launch_raw.get("argv")
+            if not isinstance(argv_raw, list) or not argv_raw:
+                raise ConfigError("launch.argv 必须是非空字符串数组")
+            argv: list[str] = []
+            for argument in argv_raw:
+                if not isinstance(argument, str) or not argument or "\x00" in argument:
+                    raise ConfigError("launch.argv 只能包含非空且无 NUL 的字符串")
+                argv.append(argument)
+            interpreter = launch_raw.get("interpreter", "")
+            if not isinstance(interpreter, str) or "\x00" in interpreter:
+                raise ConfigError("launch.interpreter 必须是字符串")
+            managed_environment = launch_raw.get("managed_environment", False)
+            if not isinstance(managed_environment, bool):
+                raise ConfigError("launch.managed_environment 必须是 true 或 false")
+            launch = LaunchConfig(
+                "argv",
+                detector.strip(),
+                str(Path(source).expanduser()),
+                tuple(argv),
+                interpreter.strip(),
+                managed_environment,
+            )
+
+        readiness_raw = raw.get("readiness", {})
+        if not isinstance(readiness_raw, dict):
+            raise ConfigError("readiness 必须是 TOML 表")
+        readiness_mode = readiness_raw.get("mode", "auto")
+        if not isinstance(readiness_mode, str) or readiness_mode not in {"auto", "process", "http", "tcp"}:
+            raise ConfigError("readiness.mode 仅支持 auto、process、http 或 tcp")
+
+        def readiness_number(key: str, default: float, *, minimum: float, maximum: float) -> float:
+            value = readiness_raw.get(key, default)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ConfigError(f"readiness.{key} 必须是数字")
+            result = float(value)
+            if not minimum <= result <= maximum:
+                raise ConfigError(f"readiness.{key} 必须在 {minimum:g} 到 {maximum:g} 秒之间")
+            return result
+
+        grace_seconds = readiness_number("grace_seconds", 3.0, minimum=0.0, maximum=3600.0)
+        timeout_seconds = readiness_number("timeout_seconds", 120.0, minimum=0.1, maximum=86400.0)
+        health_url = readiness_raw.get("health_url", "")
+        if not isinstance(health_url, str) or "\x00" in health_url:
+            raise ConfigError("readiness.health_url 必须是字符串")
+        health_url = health_url.strip()
+        health_port_raw = readiness_raw.get("health_port")
+        if health_port_raw is None:
+            health_port = None
+        elif isinstance(health_port_raw, bool) or not isinstance(health_port_raw, int):
+            raise ConfigError("readiness.health_port 必须是整数")
+        elif not 1 <= health_port_raw <= 65535:
+            raise ConfigError("readiness.health_port 必须在 1 到 65535 之间")
+        else:
+            health_port = health_port_raw
+        if readiness_mode == "http" and not health_url:
+            raise ConfigError("readiness.mode=http 时必须设置 health_url")
+        if readiness_mode == "tcp" and health_port is None:
+            raise ConfigError("readiness.mode=tcp 时必须设置 health_port")
+        readiness = ReadinessConfig(
+            readiness_mode,
+            grace_seconds,
+            timeout_seconds,
+            health_url,
+            health_port,
+        )
+
         return cls(
             id=tool_id,
             name=name,
@@ -119,6 +224,8 @@ class ToolConfig:
             stop_signal=stop_signal,
             stop_timeout=stop_timeout,
             group=group,
+            launch=launch,
+            readiness=readiness,
         )
 
 
@@ -159,6 +266,10 @@ def _toml_command(value: str) -> str:
     return _toml_string(value)
 
 
+def _toml_string_array(values: tuple[str, ...]) -> str:
+    return "[" + ", ".join(_toml_string(value) for value in values) + "]"
+
+
 def dumps(tool: ToolConfig) -> str:
     lines = [
         f"name = {_toml_string(tool.name)}",
@@ -168,12 +279,38 @@ def dumps(tool: ToolConfig) -> str:
         f"shell = {_toml_string(tool.shell)}",
         f"autostart = {'true' if tool.autostart else 'false'}",
         f"stop_signal = {_toml_string(tool.stop_signal)}",
-        f"stop_timeout = {tool.stop_timeout:g}",
+        f"stop_timeout = {tool.stop_timeout!r}",
     ]
     if tool.env:
         lines.extend(("", "[env]"))
         for key, value in sorted(tool.env.items()):
             lines.append(f"{_toml_string(key)} = {_toml_string(value)}")
+    if tool.launch is not None:
+        lines.extend(
+            (
+                "",
+                "[launch]",
+                f"mode = {_toml_string(tool.launch.mode)}",
+                f"detector = {_toml_string(tool.launch.detector)}",
+                f"source = {_toml_string(tool.launch.source)}",
+                f"argv = {_toml_string_array(tool.launch.argv)}",
+                f"interpreter = {_toml_string(tool.launch.interpreter)}",
+                f"managed_environment = {'true' if tool.launch.managed_environment else 'false'}",
+            )
+        )
+    if tool.launch is not None or tool.readiness != ReadinessConfig():
+        lines.extend(
+            (
+                "",
+                "[readiness]",
+                f"mode = {_toml_string(tool.readiness.mode)}",
+                f"grace_seconds = {tool.readiness.grace_seconds!r}",
+                f"timeout_seconds = {tool.readiness.timeout_seconds!r}",
+                f"health_url = {_toml_string(tool.readiness.health_url)}",
+            )
+        )
+        if tool.readiness.health_port is not None:
+            lines.append(f"health_port = {tool.readiness.health_port}")
     return "\n".join(lines) + "\n"
 
 
@@ -191,6 +328,25 @@ def save(tool: ToolConfig, *, overwrite: bool = True) -> Path:
             "stop_signal": tool.stop_signal,
             "stop_timeout": tool.stop_timeout,
             "group": tool.group,
+            "launch": (
+                {
+                    "mode": tool.launch.mode,
+                    "detector": tool.launch.detector,
+                    "source": tool.launch.source,
+                    "argv": list(tool.launch.argv),
+                    "interpreter": tool.launch.interpreter,
+                    "managed_environment": tool.launch.managed_environment,
+                }
+                if tool.launch is not None
+                else None
+            ),
+            "readiness": {
+                "mode": tool.readiness.mode,
+                "grace_seconds": tool.readiness.grace_seconds,
+                "timeout_seconds": tool.readiness.timeout_seconds,
+                "health_url": tool.readiness.health_url,
+                "health_port": tool.readiness.health_port,
+            },
         },
     )
     paths.ensure_dirs()
@@ -198,25 +354,12 @@ def save(tool: ToolConfig, *, overwrite: bool = True) -> Path:
     if destination.exists() and not overwrite:
         raise ConfigError(f"工具 {checked.id} 已存在")
     data = dumps(checked)
-    fd, temporary = tempfile.mkstemp(prefix=f".{checked.id}.", suffix=".tmp", dir=destination.parent)
+    if overwrite:
+        return atomic_write_text(destination, data)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
-            handle.write(data)
-            handle.flush()
-            os.fsync(handle.fileno())
-        if overwrite:
-            os.replace(temporary, destination)
-        else:
-            try:
-                os.link(temporary, destination)
-            except FileExistsError as exc:
-                raise ConfigError(f"工具 {checked.id} 已存在") from exc
-    finally:
-        try:
-            os.unlink(temporary)
-        except FileNotFoundError:
-            pass
-    return destination
+        return atomic_create_text(destination, data)
+    except FileExistsError as exc:
+        raise ConfigError(f"工具 {checked.id} 已存在") from exc
 
 
 def delete(tool_id: str) -> None:

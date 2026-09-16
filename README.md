@@ -8,8 +8,10 @@ Lattice 是面向 Windows/Linux 的本地进程控制台，用于统一管理 AI
 
 - [中文安装指南](docs/zh/INSTALL.md)
 - [中文使用与故障排查](docs/zh/USAGE.md)
+- [中文架构设计](docs/zh/ARCHITECTURE.md)
 - [English installation guide](docs/en/INSTALL.md)
 - [English usage and troubleshooting](docs/en/USAGE.md)
+- [English architecture](docs/en/ARCHITECTURE.md)
 - [Copyright and safety notice / 版权与安全声明](NOTICE.md)
 
 ## Highlights / 主要功能
@@ -19,6 +21,9 @@ Lattice 是面向 Windows/Linux 的本地进程控制台，用于统一管理 AI
 - Validated process-group stopping on Linux and `taskkill /T` process-tree stopping on Windows.
 - Persistent logs, stable live view, file-manager reveal, and display-only clearing.
 - 80%-150% interface text scaling and bundled Fira Sans/Fira Sans Condensed/JetBrains Mono fonts.
+- Runtime-switchable Day, Night, and Operations Archive themes, with inherited user packs in `themes.d`.
+- A frontend-neutral application API plus `tooldeck.frontends` plugins for alternate desktop, web, or TUI adapters.
+- Select-to-run launch detection for Python, Shell, EXE, BAT/CMD, and PowerShell, with confirmed project-local Python setup and readiness checks.
 - Optional 4.2-second Rhine Lab-inspired startup sequence: daily, always, or off; offline fallback; no audio or telemetry.
 - Source install/repair scripts and a Windows portable build workflow.
 
@@ -41,8 +46,12 @@ CLI examples:
     tooldeck start comfyui
     tooldeck logs -f comfyui
     tooldeck stop comfyui
+    tooldeck frontends
+    tooldeck --frontend qml
 
 ## Tool Configuration / 工具配置
+
+In the GUI, choose a program or launch script. Lattice detects the interpreter, working directory, and launch arguments, runs a blocking preflight, and only asks for a name and group. Python projects without an environment offer a confirmed project-local `.venv` setup whose complete output is written to the state log directory. Raw commands remain available under Advanced Settings for legacy configurations.
 
 Tool TOMLs live in `~/.config/tooldeck/tools.d/` on Linux and `%APPDATA%\tooldeck\tools.d\` on Windows. Example:
 
@@ -56,6 +65,8 @@ Tool TOMLs live in `~/.config/tooldeck/tools.d/` on Linux and `%APPDATA%\tooldec
     stop_timeout = 15
 
 The `group` field owns group membership. `layout.json` only owns group order, tool order, and collapsed state. A corrupt layout is reported without overwriting the file; repair the reported file or move it aside before reloading the configuration.
+
+Newly detected tools also store optional `[launch]` and `[readiness]` tables. Existing TOMLs without those tables remain valid and continue to use `cmd` plus `shell`.
 
 ## Development / 开发
 

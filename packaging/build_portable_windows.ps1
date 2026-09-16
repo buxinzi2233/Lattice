@@ -22,7 +22,7 @@ if ($LASTEXITCODE -ne 0) { throw "Windows build dependency sync failed" }
 if (Test-Path $OutputPath) { Remove-Item -Recurse -Force $OutputPath }
 New-Item -ItemType Directory -Force -Path $OutputPath | Out-Null
 
-& $Python -m nuitka --standalone --assume-yes-for-downloads --enable-plugin=pyside6 --include-qt-plugins=qml --include-distribution-metadata=tooldeck --include-package=tooldeck --include-package-data=tooldeck.gui --windows-icon-from-ico="$ProjectDir\src\tooldeck\gui\assets\lattice.ico" --output-filename=Lattice.exe --output-dir="$OutputPath" "$ProjectDir\packaging\lattice_windows_entry.py"
+& $Python -m nuitka --standalone --assume-yes-for-downloads --enable-plugin=pyside6 --include-qt-plugins=qml --include-distribution-metadata=tooldeck --include-package=tooldeck --include-package-data=tooldeck.gui --include-package-data=tooldeck:theme_packs/*.json --windows-icon-from-ico="$ProjectDir\src\tooldeck\gui\assets\lattice.ico" --output-filename=Lattice.exe --output-dir="$OutputPath" "$ProjectDir\packaging\lattice_windows_entry.py"
 if ($LASTEXITCODE -ne 0) { throw "Nuitka portable build failed" }
 
 $StandaloneDir = Get-ChildItem -Path $OutputPath -Directory -Filter "*.dist" | Select-Object -First 1

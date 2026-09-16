@@ -21,6 +21,7 @@ ApplicationWindow {
     property int dropTargetRow: -1
     property real dropTargetY: -1
     property string draggingLabel: ""
+    property real operationsSelectionReveal: 1
     readonly property bool hasSelection: AppBridge.selectedId.length > 0
 
     function updateDropTarget(y) {
@@ -55,13 +56,37 @@ ApplicationWindow {
         AppBridge.moveTool(sourceTool, targetGroup, targetIndex)
     }
 
+    function syncTheme() {
+        Theme.applyTokens(AppBridge.themeTokens)
+    }
+
+    function revealOperationsSelection() {
+        if (!operationsShell.visible) {
+            operationsSelectionReveal = 1
+            return
+        }
+        operationsSelectionAnimation.restart()
+    }
+
     Binding {
         target: Theme
         property: "fontScale"
         value: AppBridge.fontScale
     }
 
+    NumberAnimation {
+        id: operationsSelectionAnimation
+        objectName: "operationsSelectionAnimation"
+        target: root
+        property: "operationsSelectionReveal"
+        from: 0
+        to: 1
+        duration: Theme.normal
+        easing.type: Theme.easeEnter
+    }
+
     Component.onCompleted: {
+        syncTheme()
         if (AppBridge.startupAutoLaunch && AppBridge.startupShouldShow)
             startupExperience.show(false)
     }
@@ -79,8 +104,12 @@ ApplicationWindow {
     }
 
     RowLayout {
+        id: operationsShell
+        objectName: "operationsShell"
         anchors.fill: parent
         spacing: 0
+        visible: AppBridge.themeShell !== "archive"
+        enabled: visible
 
         Rectangle {
             id: rail
@@ -160,15 +189,9 @@ ApplicationWindow {
                 Item { Layout.fillHeight: true }
 
                 RailButton {
-                    iconName: "type"
-                    tip: "调整界面字号"
-                    active: fontScalePanel.opened
-                    Layout.alignment: Qt.AlignHCenter
-                    onClicked: fontScalePanel.opened ? fontScalePanel.close() : fontScalePanel.open()
-                }
-                RailButton {
+                    objectName: "interfaceSettingsAction"
                     iconName: "settings"
-                    tip: "启动与版权设置"
+                    tip: "界面与启动设置"
                     active: settingsPanel.opened
                     Layout.alignment: Qt.AlignHCenter
                     onClicked: settingsPanel.opened ? settingsPanel.close() : settingsPanel.open()
@@ -267,9 +290,9 @@ ApplicationWindow {
                     onTextEdited: AppBridge.setSearchText(text)
                     background: Rectangle {
                         color: Theme.paperRaised
-                        border.width: 1
+                        border.width: Theme.lineWidth
                         border.color: searchField.activeFocus ? Theme.command : Theme.line
-                        radius: 2
+                        radius: Theme.radiusSmall
                     }
                 }
 
@@ -284,19 +307,25 @@ ApplicationWindow {
                         model: [
                             { key: "all", label: "全部" },
                             { key: "running", label: "运行 " + AppBridge.toolModel.runningCount },
-                            { key: "stopped", label: "静止 " + AppBridge.toolModel.stoppedCount }
+                            { key: "stopped", label: "静止 " + AppBridge.toolModel.idleCount },
+                            { key: "exited", label: "异常 " + AppBridge.toolModel.exitedCount }
                         ]
 
                         Button {
+                            id: filterButton
                             required property var modelData
                             Layout.fillWidth: true
                             Layout.preferredHeight: 30
                             text: modelData.label
                             hoverEnabled: true
                             onClicked: AppBridge.setFilterMode(modelData.key)
+                            transform: Translate {
+                                y: filterButton.down ? 1 : 0
+                                Behavior on y { NumberAnimation { duration: Theme.fast; easing.type: Theme.easeStandard } }
+                            }
                             contentItem: Text {
-                                text: parent.text
-                                color: AppBridge.filterMode === modelData.key ? Theme.white : Theme.muted
+                                text: filterButton.text
+                                color: AppBridge.filterMode === filterButton.modelData.key ? Theme.white : Theme.muted
                                 font.family: Theme.sans
                                 font.pixelSize: Theme.sp(10)
                                 font.weight: Font.DemiBold
@@ -304,11 +333,12 @@ ApplicationWindow {
                                 verticalAlignment: Text.AlignVCenter
                             }
                             background: Rectangle {
-                                color: AppBridge.filterMode === modelData.key ? Theme.ink : parent.hovered ? Theme.paperRaised : "transparent"
-                                border.width: 1
-                                border.color: AppBridge.filterMode === modelData.key ? Theme.ink : Theme.line
-                                radius: 2
+                                color: AppBridge.filterMode === filterButton.modelData.key ? Theme.ink : filterButton.hovered ? Theme.paperRaised : "transparent"
+                                border.width: Theme.lineWidth
+                                border.color: AppBridge.filterMode === filterButton.modelData.key ? Theme.ink : Theme.line
+                                radius: Theme.radiusSmall
                                 Behavior on color { ColorAnimation { duration: Theme.fast } }
+                                Behavior on border.color { ColorAnimation { duration: Theme.fast } }
                             }
                         }
                     }
@@ -365,7 +395,7 @@ ApplicationWindow {
                                 toolCwd: model.toolCwd || ""
                                 toolState: model.toolState || "stopped"
                                 stateLabel: model.stateLabel || ""
-                                stateColor: model.stateColor || Theme.faint
+                                stateColor: Theme.stateColor(model.toolState || "stopped")
                                 pidText: model.pidText || "----"
                                 uptimeText: model.uptimeText || "--"
                                 sequenceText: model.sequenceText || "--"
@@ -574,8 +604,11 @@ ApplicationWindow {
                 }
 
                 Item {
+                    id: selectionHeader
                     Layout.fillWidth: true
                     Layout.preferredHeight: Math.max(164, 130 + Theme.sp(34))
+                    opacity: 0.76 + root.operationsSelectionReveal * 0.24
+                    transform: Translate { x: (1 - root.operationsSelectionReveal) * Theme.shiftSmall }
 
                     RowLayout {
                         anchors.fill: parent
@@ -600,7 +633,7 @@ ApplicationWindow {
                                 Text {
                                     visible: root.hasSelection
                                     text: root.value("stateLabel", "")
-                                    color: root.value("stateColor", Theme.muted)
+                                    color: Theme.stateColor(root.value("state", "stopped"))
                                     font.family: Theme.sans
                                     font.pixelSize: Theme.sp(10)
                                     font.weight: Font.DemiBold
@@ -638,6 +671,7 @@ ApplicationWindow {
                         RowLayout {
                             visible: root.hasSelection
                             spacing: 8
+                            ActionButton { visible: root.value("readyUrl", "").length > 0; iconName: "external"; tip: "打开本地服务"; onClicked: AppBridge.openSelectedService() }
                             ActionButton { iconName: "refresh"; tip: "重启"; onClicked: AppBridge.restartSelected() }
                             ActionButton {
                                 iconName: root.value("active", false) ? "stop" : "play"
@@ -663,8 +697,11 @@ ApplicationWindow {
                     objectName: "operationsContent"
                     Layout.fillWidth: true
                     Layout.fillHeight: true
-                    opacity: 1
-                    transform: Translate { id: operationsContentShift; x: 0 }
+                    opacity: 0.72 + root.operationsSelectionReveal * 0.28
+                    transform: Translate {
+                        id: operationsContentShift
+                        x: (1 - root.operationsSelectionReveal) * Theme.shiftMedium
+                    }
 
                     RowLayout {
                         anchors.fill: parent
@@ -705,18 +742,26 @@ ApplicationWindow {
                                                 implicitHeight: 15
                                                 x: 0
                                                 anchors.verticalCenter: parent.verticalCenter
-                                                radius: 1
+                                                radius: Theme.radiusTiny
                                                 color: followLog.checked ? Theme.telemetry : "transparent"
-                                                border.width: 1
+                                                border.width: Theme.lineWidth
                                                 border.color: followLog.checked ? Theme.telemetry : Theme.lineDark
-                                                Text {
-                                                    visible: followLog.checked
+
+                                                Behavior on color { ColorAnimation { duration: Theme.fast } }
+                                                Behavior on border.color { ColorAnimation { duration: Theme.fast } }
+
+                                                VectorIcon {
                                                     anchors.centerIn: parent
-                                                    text: "✓"
+                                                    name: "check"
                                                     color: Theme.ink
-                                                    font.family: Theme.mono
-                                                    font.pixelSize: Theme.sp(10)
-                                                    font.weight: Font.Bold
+                                                    width: 10
+                                                    height: 10
+                                                    strokeWidth: 2.2
+                                                    opacity: followLog.checked ? 1 : 0
+                                                    scale: followLog.checked ? 1 : 0.55
+
+                                                    Behavior on opacity { NumberAnimation { duration: Theme.fast; easing.type: Theme.easeStandard } }
+                                                    Behavior on scale { NumberAnimation { duration: Theme.normal; easing.type: Theme.easeEnter } }
                                                 }
                                             }
                                             contentItem: Text {
@@ -729,6 +774,7 @@ ApplicationWindow {
                                             }
                                         }
                                         ActionButton { iconName: "external"; kind: "dark"; tip: "在文件管理器中定位完整日志"; enabled: root.hasSelection; onClicked: AppBridge.openSelectedLog() }
+                                        ActionButton { objectName: "copyLogAction"; iconName: "copy"; kind: "dark"; tip: "复制当前显示的运行记录"; enabled: AppBridge.logText.trim().length > 0; onClicked: AppBridge.copyVisibleLog() }
                                         ActionButton { iconName: "clear"; kind: "dark"; tip: "清除当前显示"; enabled: root.hasSelection; onClicked: AppBridge.clearVisibleLog() }
                                     }
                                 }
@@ -744,11 +790,11 @@ ApplicationWindow {
                                     TextArea {
                                         id: logText
                                         objectName: "logText"
-                                        text: AppBridge.logText
+                                        text: operations.visible ? AppBridge.logText : ""
                                         readOnly: true
                                         selectByMouse: true
                                         wrapMode: TextEdit.NoWrap
-                                        color: "#dbe4de"
+                                        color: Theme.consoleText
                                         selectionColor: Theme.command
                                         selectedTextColor: Theme.white
                                         font.family: Theme.mono
@@ -759,7 +805,7 @@ ApplicationWindow {
                                         bottomPadding: 14
                                         background: null
                                         onTextChanged: {
-                                            if (followLog.checked)
+                                            if (operations.visible && followLog.checked)
                                                 cursorPosition = length
                                         }
                                     }
@@ -911,149 +957,45 @@ ApplicationWindow {
 
             Rectangle {
                 id: scanner
+                x: -64
                 y: 0
                 width: 64
                 height: 2
                 color: Theme.telemetry
                 opacity: 0.72
 
-                SequentialAnimation on x {
-                    loops: Animation.Infinite
-                    NumberAnimation { from: -64; to: operations.width; duration: 4200; easing.type: Easing.InOutSine }
-                    PauseAnimation { duration: 1400 }
+                transform: Translate {
+                    id: operationsScannerShift
+
+                    SequentialAnimation on x {
+                        objectName: "operationsScannerAnimation"
+                        running: operationsShell.visible
+                        loops: Animation.Infinite
+                        NumberAnimation { from: 0; to: operations.width + 128; duration: 4200; easing.type: Theme.easeAmbient }
+                        PauseAnimation { duration: 1400 }
+                    }
                 }
             }
         }
     }
 
-    Popup {
-        id: fontScalePanel
-        objectName: "fontScalePanel"
-        parent: Overlay.overlay
-        x: rail.width + 10
-        y: Math.max(16, root.height - height - 128)
-        width: 284
-        height: fontScaleContent.implicitHeight
-        padding: 0
-        focus: true
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-
-        background: Rectangle {
-            color: Theme.paperRaised
-            border.width: 1
-            border.color: Theme.ink
-            radius: 2
+    ArchiveShell {
+        id: archiveShell
+        anchors.fill: parent
+        bridge: AppBridge
+        visible: AppBridge.themeShell === "archive"
+        enabled: visible
+        onAddRequested: toolEditor.openWith("add", AppBridge.newToolDraft())
+        onImportRequested: importDialog.open()
+        onEditRequested: toolEditor.openWith("edit", AppBridge.selectedToolDraft())
+        onStopAllRequested: {
+            if (AppBridge.toolModel.runningCount > 0)
+                confirmPanel.ask("stop-all", "停止全部活动单元", "将向当前所有活动进程组发送停止指令。", "停止全部", "danger")
+            else
+                toast.show("当前没有活动单元", "warning")
         }
-
-        contentItem: ColumnLayout {
-            id: fontScaleContent
-            spacing: 0
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 46
-                color: Theme.ink
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 16
-                    anchors.rightMargin: 14
-                    spacing: 8
-
-                    Text {
-                        text: "INTERFACE TYPE"
-                        color: Theme.white
-                        font.family: Theme.mono
-                        font.pixelSize: Theme.sp(10)
-                        font.weight: Font.Bold
-                    }
-                    Item { Layout.fillWidth: true }
-                    Text {
-                        id: fontScaleValue
-                        objectName: "fontScaleValue"
-                        text: Math.round(AppBridge.fontScale * 100) + "%"
-                        color: Theme.telemetry
-                        font.family: Theme.mono
-                        font.pixelSize: Theme.sp(13)
-                        font.weight: Font.Bold
-                    }
-                }
-            }
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                Layout.margins: 16
-                spacing: 12
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 9
-
-                    ActionButton {
-                        iconName: "minus"
-                        tip: "减小字号"
-                        onClicked: AppBridge.setFontScale(AppBridge.fontScale - 0.05)
-                    }
-                    Slider {
-                        id: fontScaleSlider
-                        objectName: "fontScaleSlider"
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 38
-                        from: 0.80
-                        to: 1.50
-                        stepSize: 0.01
-                        value: AppBridge.fontScale
-                        snapMode: Slider.SnapAlways
-                        live: true
-                        Accessible.name: "界面字号"
-                        onMoved: AppBridge.setFontScale(value)
-
-                        background: Rectangle {
-                            x: fontScaleSlider.leftPadding
-                            y: fontScaleSlider.topPadding + fontScaleSlider.availableHeight / 2 - height / 2
-                            width: fontScaleSlider.availableWidth
-                            height: 4
-                            color: Theme.line
-
-                            Rectangle {
-                                width: fontScaleSlider.visualPosition * parent.width
-                                height: parent.height
-                                color: Theme.command
-                            }
-                        }
-                        handle: Rectangle {
-                            x: fontScaleSlider.leftPadding + fontScaleSlider.visualPosition * (fontScaleSlider.availableWidth - width)
-                            y: fontScaleSlider.topPadding + fontScaleSlider.availableHeight / 2 - height / 2
-                            implicitWidth: 14
-                            implicitHeight: 22
-                            color: fontScaleSlider.pressed ? Theme.command : Theme.ink
-                            border.width: 1
-                            border.color: Theme.paperRaised
-                            radius: 1
-                        }
-                    }
-                    ActionButton {
-                        iconName: "plus"
-                        tip: "增大字号"
-                        onClicked: AppBridge.setFontScale(AppBridge.fontScale + 0.05)
-                    }
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    Text { text: "80%"; color: Theme.muted; font.family: Theme.mono; font.pixelSize: Theme.sp(9) }
-                    Item { Layout.fillWidth: true }
-                    ActionButton {
-                        iconName: "refresh"
-                        label: "100%"
-                        tip: "恢复默认字号"
-                        onClicked: AppBridge.setFontScale(1.0)
-                    }
-                    Item { Layout.fillWidth: true }
-                    Text { text: "150%"; color: Theme.muted; font.family: Theme.mono; font.pixelSize: Theme.sp(9) }
-                }
-            }
-        }
+        onExitRequested: confirmPanel.ask("exit", "退出晶格中枢", "活动工具不会自动停止；仅退出 Lattice 控制界面。", "退出", "danger")
+        onSettingsRequested: settingsPanel.opened ? settingsPanel.close() : settingsPanel.open()
     }
 
     Popup {
@@ -1063,60 +1005,235 @@ ApplicationWindow {
         x: rail.width + 10
         y: 88
         width: Math.min(430, root.width - rail.width - 28)
-        height: Math.min(560, root.height - 112)
+        height: Math.min(600, root.height - 112)
         padding: 0
         focus: true
         closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        background: Rectangle { color: Theme.paperRaised; border.width: 1; border.color: Theme.ink; radius: 0 }
+        background: Rectangle { color: Theme.paperRaised; border.width: Theme.lineWidth; border.color: Theme.ink; radius: 0 }
         contentItem: ColumnLayout {
             spacing: 0
             Rectangle {
                 Layout.fillWidth: true
                 Layout.preferredHeight: 54
                 color: Theme.ink
-                Text { anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "STARTUP EXPERIENCE"; color: Theme.white; font.family: Theme.mono; font.pixelSize: Theme.sp(10); font.weight: Font.Bold }
+                Text { anchors.left: parent.left; anchors.leftMargin: 16; anchors.verticalCenter: parent.verticalCenter; text: "INTERFACE SETTINGS"; color: Theme.white; font.family: Theme.mono; font.pixelSize: Theme.sp(10); font.weight: Font.Bold }
             }
-            ColumnLayout {
+            ScrollView {
+                id: settingsScroll
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.margins: 16
-                spacing: 13
-                Text { text: "启动动画"; color: Theme.text; font.family: Theme.condensed; font.pixelSize: Theme.sp(22); font.weight: Font.Bold }
-                Repeater {
-                    model: [
-                        { key: "daily", label: "每日首次" },
-                        { key: "always", label: "每次启动" },
-                        { key: "off", label: "关闭" }
-                    ]
-                    Button {
-                        required property var modelData
+                clip: true
+                contentWidth: availableWidth
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+
+                ColumnLayout {
+                    width: Math.max(0, settingsScroll.availableWidth - 32)
+                    x: 16
+                    y: 16
+                    spacing: 13
+                    Text { text: "界面主题"; color: Theme.text; font.family: Theme.condensed; font.pixelSize: Theme.sp(22); font.weight: Font.Bold }
+                    RowLayout {
                         Layout.fillWidth: true
-                        Layout.preferredHeight: 36
-                        text: modelData.label
-                        onClicked: AppBridge.setStartupMode(modelData.key)
-                        contentItem: Text { text: parent.text; color: AppBridge.startupMode === modelData.key ? Theme.white : Theme.text; font.family: Theme.sans; font.pixelSize: Theme.sp(12); horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
-                        background: Rectangle { color: AppBridge.startupMode === modelData.key ? Theme.ink : Theme.paper; border.width: 1; border.color: AppBridge.startupMode === modelData.key ? Theme.ink : Theme.line; radius: 0 }
+                        spacing: 8
+
+                        ComboBox {
+                            id: themeSelector
+                            objectName: "themeSelector"
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 38
+                            model: AppBridge.availableThemes
+                            textRole: "name"
+                            valueRole: "id"
+                            currentIndex: AppBridge.themeIndex
+                            hoverEnabled: true
+                            onActivated: AppBridge.setTheme(currentValue)
+                            contentItem: Text {
+                                leftPadding: 12
+                                rightPadding: 38
+                                text: themeSelector.displayText
+                                color: Theme.text
+                                font.family: Theme.sans
+                                font.pixelSize: Theme.sp(12)
+                                verticalAlignment: Text.AlignVCenter
+                                elide: Text.ElideRight
+                            }
+                            indicator: VectorIcon {
+                                name: "collapse"
+                                width: 24
+                                height: 24
+                                x: themeSelector.width - width - 8
+                                y: (themeSelector.height - height) / 2
+                                color: Theme.muted
+                            }
+                            background: Rectangle {
+                                color: themeSelector.pressed ? Theme.fog : Theme.paper
+                                border.width: Theme.lineWidth
+                                border.color: themeSelector.activeFocus ? Theme.command : Theme.line
+                                radius: Theme.radiusSmall
+                            }
+                        }
+                        ActionButton { iconName: "folder"; tip: "打开用户主题目录"; onClicked: AppBridge.openThemeDirectory() }
+                        ActionButton { iconName: "refresh"; tip: "重新载入主题包"; onClicked: AppBridge.reloadThemes() }
                     }
-                }
-                RowLayout {
-                    Layout.fillWidth: true
-                    ActionButton { iconName: "play"; label: "立即预览"; kind: "command"; onClicked: { AppBridge.previewStartup(); startupExperience.show(true) } }
-                    ActionButton { iconName: "clear"; label: "清理缓存"; onClicked: AppBridge.clearStartupCache() }
-                }
-                Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
-                Text { text: "版权与安全"; color: Theme.text; font.family: Theme.mono; font.pixelSize: Theme.sp(10); font.weight: Font.Bold }
-                Text {
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    text: "Lattice 是非官方项目，与《明日方舟》、鹰角网络或 Yostar 无隶属、赞助或背书关系。代码以 MIT 发布，但不授予任何角色、商标、台词、剧情文本或官方图片的再许可。启动页只从清单白名单中的官方 HTTPS 来源下载可选图片到本地缓存；失败时使用内置抽象背景。程序不上传缓存、不收集遥测。权利人可通过 GitHub 仓库 issue 或 release 联系渠道要求更正或下架。"
-                    color: Theme.muted
-                    font.family: Theme.sans
-                    font.pixelSize: Theme.sp(12)
-                    lineHeight: 1.35
-                    wrapMode: Text.Wrap
+                    Text {
+                        Layout.fillWidth: true
+                        text: AppBridge.themeAppearance === "dark" ? "DARK APPEARANCE" : "LIGHT APPEARANCE"
+                        color: Theme.faint
+                        font.family: Theme.mono
+                        font.pixelSize: Theme.sp(9)
+                    }
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
+                    ColumnLayout {
+                        objectName: "fontScaleSection"
+                        Layout.fillWidth: true
+                        spacing: 12
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "界面缩放"; color: Theme.text; font.family: Theme.condensed; font.pixelSize: Theme.sp(22); font.weight: Font.Bold }
+                            Item { Layout.fillWidth: true }
+                            Text {
+                                id: fontScaleValue
+                                objectName: "fontScaleValue"
+                                text: Math.round(AppBridge.fontScale * 100) + "%"
+                                color: Theme.telemetry
+                                font.family: Theme.mono
+                                font.pixelSize: Theme.sp(13)
+                                font.weight: Font.Bold
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 9
+
+                            ActionButton {
+                                objectName: "fontScaleDecrease"
+                                iconName: "minus"
+                                tip: "减小字号"
+                                onClicked: AppBridge.setFontScale(AppBridge.fontScale - 0.05)
+                            }
+                            Slider {
+                                id: fontScaleSlider
+                                objectName: "fontScaleSlider"
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 38
+                                from: 0.80
+                                to: 1.50
+                                stepSize: 0.01
+                                value: AppBridge.fontScale
+                                snapMode: Slider.SnapAlways
+                                live: true
+                                Accessible.name: "界面字号"
+                                onMoved: AppBridge.setFontScale(value)
+
+                                background: Rectangle {
+                                    x: fontScaleSlider.leftPadding
+                                    y: fontScaleSlider.topPadding + fontScaleSlider.availableHeight / 2 - height / 2
+                                    width: fontScaleSlider.availableWidth
+                                    height: 4
+                                    color: Theme.line
+
+                                    Rectangle {
+                                        width: fontScaleSlider.visualPosition * parent.width
+                                        height: parent.height
+                                        color: Theme.command
+                                    }
+                                }
+                                handle: Rectangle {
+                                    x: fontScaleSlider.leftPadding + fontScaleSlider.visualPosition * (fontScaleSlider.availableWidth - width)
+                                    y: fontScaleSlider.topPadding + fontScaleSlider.availableHeight / 2 - height / 2
+                                    implicitWidth: 14
+                                    implicitHeight: 22
+                                    color: fontScaleSlider.pressed ? Theme.command : Theme.ink
+                                    border.width: Theme.lineWidth
+                                    border.color: Theme.paperRaised
+                                    radius: Theme.radiusTiny
+                                }
+                            }
+                            ActionButton {
+                                objectName: "fontScaleIncrease"
+                                iconName: "plus"
+                                tip: "增大字号"
+                                onClicked: AppBridge.setFontScale(AppBridge.fontScale + 0.05)
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "80%"; color: Theme.muted; font.family: Theme.mono; font.pixelSize: Theme.sp(9) }
+                            Item { Layout.fillWidth: true }
+                            ActionButton {
+                                objectName: "fontScaleReset"
+                                iconName: "refresh"
+                                label: "100%"
+                                tip: "恢复默认字号"
+                                onClicked: AppBridge.setFontScale(1.0)
+                            }
+                            Item { Layout.fillWidth: true }
+                            Text { text: "150%"; color: Theme.muted; font.family: Theme.mono; font.pixelSize: Theme.sp(9) }
+                        }
+                    }
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
+                    Text { text: "启动动画"; color: Theme.text; font.family: Theme.condensed; font.pixelSize: Theme.sp(22); font.weight: Font.Bold }
+                    Repeater {
+                        model: [
+                            { key: "daily", label: "每日首次" },
+                            { key: "always", label: "每次启动" },
+                            { key: "off", label: "关闭" }
+                        ]
+                        Button {
+                            id: startupModeButton
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: 36
+                            text: modelData.label
+                            hoverEnabled: true
+                            onClicked: AppBridge.setStartupMode(startupModeButton.modelData.key)
+                            transform: Translate {
+                                y: startupModeButton.down ? 1 : 0
+                                Behavior on y { NumberAnimation { duration: Theme.fast; easing.type: Theme.easeStandard } }
+                            }
+                            contentItem: Text { text: startupModeButton.text; color: AppBridge.startupMode === startupModeButton.modelData.key ? Theme.white : Theme.text; font.family: Theme.sans; font.pixelSize: Theme.sp(12); horizontalAlignment: Text.AlignHCenter; verticalAlignment: Text.AlignVCenter }
+                            background: Rectangle {
+                                color: AppBridge.startupMode === startupModeButton.modelData.key ? Theme.ink : startupModeButton.hovered ? Theme.fog : Theme.paper
+                                border.width: Theme.lineWidth
+                                border.color: AppBridge.startupMode === startupModeButton.modelData.key ? Theme.ink : Theme.line
+                                radius: 0
+
+                                Behavior on color { ColorAnimation { duration: Theme.fast } }
+                                Behavior on border.color { ColorAnimation { duration: Theme.fast } }
+                            }
+                        }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true
+                        ActionButton { iconName: "play"; label: "立即预览"; kind: "command"; onClicked: { AppBridge.previewStartup(); startupExperience.show(true) } }
+                        ActionButton { iconName: "clear"; label: "清理缓存"; onClicked: AppBridge.clearStartupCache() }
+                    }
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
+                    Text { text: "版权与安全"; color: Theme.text; font.family: Theme.mono; font.pixelSize: Theme.sp(10); font.weight: Font.Bold }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Lattice 是非官方项目，与《明日方舟》、鹰角网络或 Yostar 无隶属、赞助或背书关系。代码以 MIT 发布，但不授予任何角色、商标、台词、剧情文本或官方图片的再许可。启动页只从清单白名单中的官方 HTTPS 来源下载可选图片到本地缓存；失败时使用内置抽象背景。程序不上传缓存、不收集遥测。权利人可通过 GitHub 仓库 issue 或 release 联系渠道要求更正或下架。"
+                        color: Theme.muted
+                        font.family: Theme.sans
+                        font.pixelSize: Theme.sp(12)
+                        lineHeight: 1.35
+                        wrapMode: Text.Wrap
+                    }
+                    Item { Layout.fillWidth: true; Layout.preferredHeight: 16 }
                 }
             }
         }
+
+        enter: Transition {
+            ParallelAnimation {
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
+                NumberAnimation { property: "scale"; from: 0.985; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
+            }
+        }
+        exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: Theme.fast; easing.type: Theme.easeExit } }
     }
 
     StartupExperience {
@@ -1128,7 +1245,8 @@ ApplicationWindow {
     Connections {
         target: AppBridge
 
-        function onSelectionIdentityChanged() { }
+        function onSelectionIdentityChanged() { root.revealOperationsSelection() }
+        function onThemeChanged() { root.syncTheme() }
         function onToastRequested(message, kind) { toast.show(message, kind) }
         function onDialogRequested(title, message, kind) {
             noticeTitle.text = title
@@ -1168,8 +1286,8 @@ ApplicationWindow {
         focus: true
         padding: 0
         closePolicy: Popup.CloseOnEscape
-        Overlay.modal: Rectangle { color: "#990d100e" }
-        background: Rectangle { color: Theme.paperRaised; border.width: 1; border.color: Theme.ink; radius: 2 }
+        Overlay.modal: Rectangle { color: Theme.scrim }
+        background: Rectangle { color: Theme.paperRaised; border.width: Theme.lineWidth; border.color: Theme.ink; radius: Theme.radiusSmall }
         contentItem: ColumnLayout {
             spacing: 0
             Rectangle { id: noticeStripe; Layout.fillWidth: true; Layout.preferredHeight: 7; color: Theme.danger }
@@ -1182,12 +1300,20 @@ ApplicationWindow {
                 ActionButton { label: "确认"; kind: "command"; Layout.alignment: Qt.AlignRight; onClicked: noticeDialog.close() }
             }
         }
+
+        enter: Transition {
+            ParallelAnimation {
+                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
+                NumberAnimation { property: "scale"; from: 0.965; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
+            }
+        }
+        exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: Theme.fast; easing.type: Theme.easeExit } }
     }
 
     Platform.FileDialog {
         id: importDialog
         title: "导入工具或配置"
-        nameFilters: ["工具配置、程序或脚本 (*.toml *.exe *.bat *.cmd *.ps1 *.py *.sh)", "所有文件 (*)"]
+        nameFilters: ["工具配置、程序、脚本或本机程序 (*.toml *.exe *.bat *.cmd *.ps1 *.py *.sh *)", "所有文件 (*)"]
         onAccepted: AppBridge.prepareImport(selectedFile.toString())
     }
 
@@ -1198,7 +1324,7 @@ ApplicationWindow {
         z: 1000
     }
 
-    Shortcut { sequence: "Ctrl+K"; onActivated: searchField.forceActiveFocus() }
+    Shortcut { sequence: "Ctrl+K"; onActivated: AppBridge.themeShell === "archive" ? archiveShell.focusSearch() : searchField.forceActiveFocus() }
     Shortcut { sequence: "Ctrl+N"; onActivated: toolEditor.openWith("add", AppBridge.newToolDraft()) }
     Shortcut { sequence: "F2"; enabled: root.hasSelection; onActivated: toolEditor.openWith("edit", AppBridge.selectedToolDraft()) }
     Shortcut { sequence: "Alt+R"; enabled: root.hasSelection; onActivated: AppBridge.restartSelected() }

@@ -17,9 +17,16 @@ Button {
     implicitHeight: 44
     padding: 0
     Accessible.name: tip
+    opacity: enabled ? 1 : 0.42
+    transform: Translate {
+        y: control.down ? 1 : 0
+        Behavior on y { NumberAnimation { duration: Theme.fast; easing.type: Theme.easeStandard } }
+    }
+
+    Behavior on opacity { NumberAnimation { duration: Theme.fast; easing.type: Theme.easeStandard } }
 
     background: Rectangle {
-        radius: 2
+        radius: Theme.radiusSmall
         color: control.down
             ? Theme.command
             : control.active
@@ -30,11 +37,21 @@ Button {
         Behavior on color { ColorAnimation { duration: Theme.fast } }
 
         Rectangle {
-            visible: control.active
+            id: activeRail
             width: 3
             height: parent.height
             anchors.left: parent.left
             color: Theme.command
+            opacity: control.active ? 1 : 0
+            transform: Scale {
+                origin.x: 0
+                origin.y: activeRail.height / 2
+                xScale: 1
+                yScale: control.active ? 1 : 0.45
+                Behavior on yScale { NumberAnimation { duration: Theme.normal; easing.type: Theme.easeEnter } }
+            }
+
+            Behavior on opacity { NumberAnimation { duration: Theme.fast; easing.type: Theme.easeStandard } }
         }
     }
 

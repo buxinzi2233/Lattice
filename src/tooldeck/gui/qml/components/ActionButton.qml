@@ -21,6 +21,13 @@ Button {
     implicitHeight: 38
     implicitWidth: iconOnly ? 38 : Math.max(88, contentRow.implicitWidth + 26)
     Accessible.name: tip.length > 0 ? tip : label
+    opacity: enabled ? 1 : 0.42
+    transform: Translate {
+        y: control.down ? 1 : 0
+        Behavior on y { NumberAnimation { duration: Theme.fast; easing.type: Theme.easeStandard } }
+    }
+
+    Behavior on opacity { NumberAnimation { duration: Theme.fast; easing.type: Theme.easeStandard } }
 
     readonly property color baseColor: {
         if (kind === "command") return Theme.command
@@ -36,7 +43,7 @@ Button {
     }
 
     background: Rectangle {
-        radius: 2
+        radius: Theme.radiusSmall
         color: !control.enabled
             ? Theme.fog
             : control.down
@@ -44,10 +51,11 @@ Button {
                 : control.hovered
                     ? (control.kind === "neutral" ? Theme.fog : Qt.lighter(control.baseColor, 1.12))
                     : control.baseColor
-        border.width: 1
+        border.width: Theme.lineWidth
         border.color: control.enabled ? control.borderColor : Theme.line
 
         Behavior on color { ColorAnimation { duration: Theme.fast } }
+        Behavior on border.color { ColorAnimation { duration: Theme.fast } }
     }
 
     contentItem: Item {

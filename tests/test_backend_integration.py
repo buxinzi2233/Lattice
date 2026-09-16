@@ -33,7 +33,7 @@ def until(predicate, seconds):
 
 
 def python_command(source: str) -> str:
-    args = [sys.executable, "-u", "-c", source]
+    args = [sys.executable, "-u", "-X", "utf8", "-c", source]
     return subprocess.list2cmdline(args) if os.name == "nt" else shlex.join(args)
 
 
@@ -177,6 +177,7 @@ def test_original_interface_receives_worker_results(qapp, tmp_path):
         until(lambda: "ready 中文" in log.property("text"), 3)
         assert root.findChild(QObject, "telemetryBand") is not None
         assert root.findChild(QObject, "manifestPanel") is not None
+        until(lambda: bridge.selected.get("state") == "running", 5)
         assert bridge.selected["stateColor"] == "#16b8a6"
         thread = bridge.process_service.thread
         for _ in range(30):
@@ -185,7 +186,8 @@ def test_original_interface_receives_worker_results(qapp, tmp_path):
         assert bridge.process_service.thread is thread
         bridge.stopSelected()
         until(lambda: not bridge.selected.get("active") and not bridge.selected.get("pending"), 6)
-        assert not messages
+        unexpected_messages = [message for message in messages if "QFontDatabase: Cannot find font directory" not in message]
+        assert not unexpected_messages
     finally:
         try:
             if bridge.selected.get("active"):
