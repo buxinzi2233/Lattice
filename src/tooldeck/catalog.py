@@ -13,6 +13,7 @@ import json
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
+from threading import Event
 from pathlib import Path
 from typing import Iterator
 
@@ -28,7 +29,7 @@ from .config import (
     save as save_config,
 )
 from .groups import normalize_group_key
-from .layout import LayoutState, load as load_layout, move_item, reconcile, save as save_layout
+from .layout import LayoutError, LayoutState, load as load_layout, move_item, reconcile, save as save_layout
 from .storage import atomic_write_text, exclusive_file_lock, read_bytes, restore_bytes
 from .util import valid_id
 
@@ -44,6 +45,7 @@ class CatalogSnapshot:
     tools: dict[str, ToolConfig]
     issues: tuple[ConfigIssue, ...]
     layout: LayoutState
+    layout_error: str
 
 
 class ToolCatalog:
@@ -51,7 +53,12 @@ class ToolCatalog:
         self._tools: dict[str, ToolConfig] = {}
         self._issues: tuple[ConfigIssue, ...] = ()
         self._layout = LayoutState()
+        self._layout_error = ""
         self._loaded = False
+        self._closing = Event()
+
+    def close(self) -> None:
+        self._closing.set()
 
     @property
     def tools(self) -> dict[str, ToolConfig]:
@@ -70,10 +77,10 @@ class ToolCatalog:
 
     def snapshot(self) -> CatalogSnapshot:
         self._ensure_loaded()
-        return CatalogSnapshot(dict(self._tools), self._issues, self._layout.copy())
+        return CatalogSnapshot(dict(self._tools), self._issues, self._layout.copy(), self._layout_error)
 
     def refresh(self) -> CatalogSnapshot:
-        with exclusive_file_lock(paths.catalog_lock_file()):
+        with exclusive_file_lock(paths.catalog_lock_file(), 2.0, self._closing):
             return self._refresh_unlocked()
 
     def _refresh_unlocked(self) -> CatalogSnapshot:
@@ -81,14 +88,22 @@ class ToolCatalog:
         tools, issues = load_all()
         self._tools = tools
         self._issues = tuple(issues)
-        self._layout = reconcile(tools, load_layout(paths.layout_json()))
+        try:
+            self._layout = reconcile(tools, load_layout(paths.layout_json()))
+            self._layout_error = ""
+        except LayoutError as exc:
+            self._layout_error = str(exc)
+            self._issues += (ConfigIssue(paths.layout_json(), str(exc)),)
+            self._layout = reconcile(tools, LayoutState())
         self._loaded = True
         return self.snapshot()
 
     @contextmanager
     def _mutation(self) -> Iterator[None]:
-        with exclusive_file_lock(paths.catalog_lock_file()):
+        with exclusive_file_lock(paths.catalog_lock_file(), 2.0, self._closing):
             self._refresh_unlocked()
+            if self._layout_error:
+                raise LayoutError(self._layout_error)
             yield
 
     def find(self, tool_id: str) -> ToolConfig:

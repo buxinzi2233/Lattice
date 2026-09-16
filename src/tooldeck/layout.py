@@ -114,18 +114,19 @@ def load(path: Path) -> LayoutState:
     except FileNotFoundError:
         return LayoutState()
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        if path.exists():
-            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-            backup = path.with_name(f"{path.name}.corrupt-{stamp}")
-            counter = 2
-            while backup.exists():
-                backup = path.with_name(f"{path.name}.corrupt-{stamp}-{counter}")
-                counter += 1
-            try:
-                os.replace(path, backup)
-            except OSError:
-                pass
-        return LayoutState()
+        raise LayoutError(f"无法读取布局 {path}：{exc}；请修复文件或使用重置布局操作") from exc
+
+
+class LayoutError(ValueError):
+    """The saved layout needs explicit repair; loading never replaces it."""
+
+
+def repair(path: Path) -> Path:
+    """Preserve the rejected file before an explicitly requested layout reset."""
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    backup = path.with_name(f"{path.name}.corrupt-{stamp}")
+    path.rename(backup)
+    return backup
 
 
 def save(path: Path, state: LayoutState) -> Path:

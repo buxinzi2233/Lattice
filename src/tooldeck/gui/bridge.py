@@ -8,6 +8,7 @@ import sys
 import threading
 from datetime import datetime
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from PySide6.QtCore import QObject, Property, QProcess, QRunnable, QSettings, QThreadPool, QTimer, QUrl, Signal, Slot
@@ -15,25 +16,32 @@ from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import QSystemTrayIcon
 
 from tooldeck import paths
-from tooldeck.application import ToolDeckApplication
+from tooldeck.application import ImportPlan, ToolDeckApplication
+from tooldeck.launchers import LaunchAnalysis, SetupPlan
 from tooldeck.catalog import CatalogError, CatalogSnapshot
 from tooldeck.config import ConfigError, ToolConfig, default_shell
 from tooldeck.drafts import (
     base_tool_id,
+    launch_patch_for_analysis,
+    new_tool_draft,
+    tool_to_draft,
     parse_env_text,
     tool_from_draft,
     unique_tool_id,
 )
 from tooldeck.groups import display_group_name, normalize_group_key
-from tooldeck.layout import LayoutState
+from tooldeck.layout import LayoutError, LayoutState
 from tooldeck.platform_ops import reveal_path
 from tooldeck.ports import CatalogPort, RuntimePort
-from tooldeck.procs import ProcessError, ToolStatus
-from tooldeck.tailer import LogTailer
+from tooldeck.procs import ProcManager, ProcessError, ToolStatus
+from tooldeck.tailer import LogBatch, LogTailer
 from tooldeck.telemetry import SystemSampler, parse_nvidia_smi
 from tooldeck.themes import ThemeError, ThemeRegistry
 from tooldeck.util import fmt_duration, short_home, strip_ansi
 
+from .preferences import application_settings
+from .hardware import HardwareSample, HardwareService
+from .workers import QueryResult, QueryValue, CatalogResult, LogDelivery, LogService, Operation, OperationResult, ProcessService, StatusSnapshot
 from .log_model import LogLineModel
 from .tool_model import STATE_COLORS, STATE_LABELS, ToolListModel
 
@@ -49,7 +57,7 @@ class _SetupTask(QRunnable):
         self,
         token: str,
         application: ToolDeckApplication,
-        setup: object,
+        setup: SetupPlan,
         cancel_event: threading.Event,
     ) -> None:
         super().__init__()
@@ -76,6 +84,8 @@ class _SetupTask(QRunnable):
 
 
 class AppBridge(QObject):
+    launchDraftReady = Signal(str, "QVariantMap")
+    toolSaveFinished = Signal(str, bool)
     selectedChanged = Signal()
     selectionIdentityChanged = Signal()
     filtersChanged = Signal()
@@ -122,6 +132,29 @@ class AppBridge(QObject):
         # Kept as compatibility aliases for callers that injected these ports.
         self.manager = self.application.runtime
         self.catalog = self.application.catalog
+        self._closed = False
+        self._log_preview = ""
+        self._status_errors: tuple[str, ...] = ()
+        self._layout_error = ""
+        self._catalog_ready = False
+        self._autostart_requested = False
+        self._autostart_done = False
+        self._query_callbacks: dict[int, tuple[Callable[[QueryValue], None], Callable[[], None], str]] = {}
+        self._setup_analyses: dict[str, threading.Event] = {}
+        self._setup_pool = QThreadPool(self)
+        self._setup_pool.setMaxThreadCount(2)
+        self._catalog_callbacks: dict[int, tuple[Callable[[CatalogSnapshot], None], Callable[[], None], str]] = {}
+        self.process_service = ProcessService(self, self.application) if isinstance(self.manager, ProcManager) else None
+        self.log_service = LogService(self) if self.process_service is not None else None
+        self.hardware_service = HardwareService(self) if self.process_service is not None else None
+        if self.process_service is not None:
+            self.process_service.snapshot.connect(self._receive_status)
+            self.process_service.completed.connect(self._operation_completed)
+            self.process_service.pendingChanged.connect(self.selectedChanged)
+            self.process_service.catalogCompleted.connect(self._catalog_completed)
+            self.process_service.queryCompleted.connect(self._query_completed)
+            self.log_service.delivered.connect(self._receive_log)
+            self.hardware_service.ready.connect(self._hardware_ready)
         self.model = ToolListModel(self)
         self.model.countsChanged.connect(self.summaryChanged)
         self.log_model = LogLineModel(self)
@@ -140,7 +173,7 @@ class AppBridge(QObject):
         self._telemetry = self._empty_telemetry()
         self._tray_icon: QSystemTrayIcon | None = None
         self._allow_close = False
-        self._settings = QSettings("ToolDeck", "ToolDeck")
+        self._settings = application_settings()
         self._font_scale = self._normalize_font_scale(
             self._settings.value(self.FONT_SCALE_KEY, self.FONT_SCALE_DEFAULT)
         )
@@ -172,6 +205,10 @@ class AppBridge(QObject):
         self.hardware_warmup_timer.setSingleShot(True)
         self.hardware_warmup_timer.timeout.connect(self.queryHardware)
 
+        self._gpu_failure = ""
+        self.gpu_timeout = QTimer(self)
+        self.gpu_timeout.setSingleShot(True)
+        self.gpu_timeout.timeout.connect(self._gpu_timed_out)
         self.gpu_process = QProcess(self)
         self.gpu_process.finished.connect(self._gpu_finished)
         self.gpu_process.errorOccurred.connect(self._gpu_error)
@@ -239,6 +276,7 @@ class AppBridge(QObject):
             "stateLabel": STATE_LABELS.get(status.state, status.state),
             "stateColor": STATE_COLORS.get(status.state, STATE_COLORS["stopped"]),
             "active": status.active,
+            "pending": self.process_service is not None and tool.id in self.process_service.pending,
             "pid": status.pid or 0,
             "pidText": str(status.pid) if status.pid else "----",
             "uptime": fmt_duration(status.uptime),
@@ -314,7 +352,7 @@ class AppBridge(QObject):
 
     @Property(bool, notify=filtersChanged)
     def reorderingAllowed(self) -> bool:
-        return not bool(self._search_text.strip()) and self._filter_mode == "all"
+        return not self._layout_error and not bool(self._search_text.strip()) and self._filter_mode == "all"
 
     @Property("QStringList", notify=layoutChanged)
     def groupOrder(self) -> list[str]:
@@ -485,6 +523,7 @@ class AppBridge(QObject):
         return True
 
     def _set_log_text(self, text: str) -> None:
+        self._log_preview = ""
         if text == self._log_text:
             return
         self._log_text = text[-self.LOG_TEXT_LIMIT :]
@@ -518,11 +557,135 @@ class AppBridge(QObject):
         return snapshot.statuses, failures
 
     def _apply_catalog_snapshot(self, snapshot: CatalogSnapshot) -> None:
-        """Copy application state into the Qt-facing model in one place."""
-
+        previous = self._selected_id
         self._tools = dict(snapshot.tools)
         self._layout = snapshot.layout.copy()
+        self._layout_error = snapshot.layout_error
+        self._statuses = {key: value for key, value in self._statuses.items() if key in self._tools}
         self.model.set_layout(self._layout)
+        self._catalog_ready = True
+        self._sync_model(previous)
+        self.layoutChanged.emit()
+        if self._selected_id != previous:
+            self._reset_log_tailer()
+
+    def _queue_catalog(
+        self,
+        operation: Callable[[ToolDeckApplication], CatalogSnapshot],
+        completed: Callable[[CatalogSnapshot], None],
+        failed: Callable[[], None],
+        title: str,
+    ) -> bool:
+        if self._closed:
+            return False
+        if self.process_service is not None:
+            request_id = self.process_service.request_catalog(operation)
+            self._catalog_callbacks[request_id] = (completed, failed, title)
+            return True
+        try:
+            completed(operation(self.application))
+            self.refreshStatus()
+            return True
+        except (CatalogError, ConfigError, LayoutError, ProcessError, OSError) as exc:
+            failed()
+            self.dialogRequested.emit(title, str(exc), "error")
+            return False
+
+    def _queue_query(
+        self,
+        operation: Callable[[ToolDeckApplication], QueryValue],
+        completed: Callable[[QueryValue], None],
+        failed: Callable[[], None],
+        title: str,
+    ) -> None:
+        if self.process_service is not None:
+            request_id = self.process_service.request_query(operation)
+            self._query_callbacks[request_id] = (completed, failed, title)
+            return
+        try:
+            completed(operation(self.application))
+        except (CatalogError, ConfigError, LayoutError, ProcessError, OSError) as exc:
+            failed()
+            self.dialogRequested.emit(title, str(exc), "error")
+
+    @Slot(object)
+    def _query_completed(self, result: QueryResult) -> None:
+        callbacks = self._query_callbacks.pop(result.request_id, None)
+        if callbacks is None or self._closed:
+            return
+        completed, failed, title = callbacks
+        if result.error:
+            failed()
+            self.dialogRequested.emit(title, result.error, "error")
+        elif result.value is not None:
+            try:
+                completed(result.value)
+            except (ConfigError, OSError) as exc:
+                failed()
+                self.dialogRequested.emit(title, str(exc), "error")
+
+    @Slot(object)
+    def _catalog_completed(self, result: CatalogResult) -> None:
+        callback = self._catalog_callbacks.pop(result.request_id, None)
+        if callback is None or self._closed:
+            return
+        completed, failed, title = callback
+        if result.error:
+            failed()
+            self.dialogRequested.emit(title, result.error, "error")
+        elif result.snapshot is not None:
+            completed(result.snapshot)
+
+    @Slot(object)
+    def _receive_status(self, snapshot: StatusSnapshot) -> None:
+        if self._closed:
+            return
+        updated = {key: value for key, value in snapshot.statuses.items() if key in self._tools}
+        self._report_transitions(updated)
+        self._statuses = updated
+        self._sync_model(status_only=True)
+        if snapshot.errors != self._status_errors:
+            self._status_errors = snapshot.errors
+            if snapshot.errors:
+                self.dialogRequested.emit("状态同步失败", "\n".join(snapshot.errors), "error")
+        if self._autostart_requested and not self._autostart_done:
+            self.startAutostart()
+
+    def _report_transitions(self, updated: dict[str, ToolStatus]) -> None:
+        for tool_id, status in updated.items():
+            previous = self._statuses.get(tool_id)
+            tool = self._tools.get(tool_id)
+            if previous is None or tool is None or previous.state == status.state:
+                continue
+            if status.state == "running" and previous.state in {"starting", "unready"}:
+                self.toastRequested.emit(f"{tool.name} 已就绪 · PID {status.pid}", "success")
+            elif status.state in {"unready", "exited"} and previous.state in {"starting", "unready"}:
+                title = f"{tool.name} 启动超时" if status.state == "unready" else f"{tool.name} 未能启动"
+                message = (status.message or status.state) + f"\n\n完整日志：{paths.log_file(tool_id)}"
+                self.dialogRequested.emit(title, message, "warning" if status.active else "error")
+
+    @Slot(object)
+    def _operation_completed(self, result: OperationResult) -> None:
+        if self._closed:
+            return
+        if result.error:
+            self.dialogRequested.emit("工具操作失败", f"{result.tool_id} / {result.action}：{result.error}", "error")
+            return
+        message = "已停止" if result.action == "stop" else "进程已启动，正在确认就绪"
+        self.toastRequested.emit(f"{result.tool_id} / {message}", "success" if result.action == "stop" else "warning")
+        if result.action in {"start", "restart"} and result.tool_id == self._selected_id:
+            self._reset_log_tailer()
+
+    def _request_operation(self, tool: ToolConfig, action: Operation) -> None:
+        if self.process_service is None:
+            raise ProcessError("后台进程服务未初始化")
+        if tool.id in self._statuses and self._statuses[tool.id].state == "error":
+            self.dialogRequested.emit("无法执行操作", "工具状态不可读，请先修复状态文件", "error")
+            return
+        try:
+            self.process_service.request(tool, action)
+        except ProcessError as exc:
+            self.dialogRequested.emit("无法执行操作", str(exc), "error")
 
     @Slot(str)
     def selectTool(self, tool_id: str) -> None:
@@ -572,44 +735,33 @@ class AppBridge(QObject):
 
     @Slot(str, result=bool)
     def toggleGroup(self, group: str) -> bool:
-        try:
-            changed = self.application.toggle_group(group)
-        except (CatalogError, OSError) as exc:
-            self.dialogRequested.emit("无法更新分组", str(exc), "error")
+        if self._group_key(group) not in self._layout.group_order:
             return False
-        if changed:
-            self._apply_catalog_snapshot(self.application.catalog_snapshot())
-            self.layoutChanged.emit()
-        return changed
+        def update(app: ToolDeckApplication) -> CatalogSnapshot:
+            if not app.toggle_group(group):
+                raise ConfigError("目录已改变，请重新加载后重试")
+            return app.catalog_snapshot()
+        return self._queue_catalog(update, self._apply_catalog_snapshot, lambda: None, "无法更新分组")
 
     @Slot(str, bool, result=bool)
     def setGroupCollapsed(self, group: str, collapsed: bool) -> bool:
-        try:
-            changed = self.application.set_group_collapsed(group, collapsed)
-        except (CatalogError, OSError) as exc:
-            self.dialogRequested.emit("无法更新分组", str(exc), "error")
+        if self._group_key(group) not in self._layout.group_order:
             return False
-        if changed:
-            self._apply_catalog_snapshot(self.application.catalog_snapshot())
-            self.layoutChanged.emit()
-        return changed
+        def update(app: ToolDeckApplication) -> CatalogSnapshot:
+            if not app.set_group_collapsed(group, collapsed):
+                raise ConfigError("目录已改变，请重新加载后重试")
+            return app.catalog_snapshot()
+        return self._queue_catalog(update, self._apply_catalog_snapshot, lambda: None, "无法更新分组")
 
     @Slot(str, str, int, result=bool)
     def moveTool(self, tool_id: str, target_group: str, target_index: int) -> bool:
-        """Move a tool within or across groups and persist its new group."""
-        if not self.reorderingAllowed:
+        if not self.reorderingAllowed or tool_id not in self._tools or self._group_key(target_group) not in self._layout.group_order:
             return False
-        try:
-            changed = self.application.move_tool(tool_id, target_group, target_index)
-        except (CatalogError, ConfigError, OSError) as exc:
-            self.dialogRequested.emit("无法移动工具", str(exc), "error")
-            return False
-        if not changed:
-            return False
-        self._apply_catalog_snapshot(self.application.catalog_snapshot())
-        self._sync_model(self._selected_id)
-        self.layoutChanged.emit()
-        return True
+        def update(app: ToolDeckApplication) -> CatalogSnapshot:
+            if not app.move_tool(tool_id, target_group, target_index):
+                raise ConfigError("目录已改变，请重新加载后重试")
+            return app.catalog_snapshot()
+        return self._queue_catalog(update, self._apply_catalog_snapshot, lambda: None, "无法更新分组")
 
     @Slot(str, result=int)
     def groupToolCount(self, group: str) -> int:
@@ -617,46 +769,29 @@ class AppBridge(QObject):
 
     @Slot(str, int, result=bool)
     def moveGroup(self, group: str, target_index: int) -> bool:
-        if not self.reorderingAllowed:
+        if not self.reorderingAllowed or self._group_key(group) not in self._layout.group_order:
             return False
-        try:
-            changed = self.application.move_group(group, target_index)
-        except (CatalogError, OSError) as exc:
-            self.dialogRequested.emit("无法移动分组", str(exc), "error")
-            return False
-        if not changed:
-            return False
-        self._apply_catalog_snapshot(self.application.catalog_snapshot())
-        self._sync_model(self._selected_id)
-        self.layoutChanged.emit()
-        return changed
+        def update(app: ToolDeckApplication) -> CatalogSnapshot:
+            if not app.move_group(group, target_index):
+                raise ConfigError("目录已改变，请重新加载后重试")
+            return app.catalog_snapshot()
+        return self._queue_catalog(update, self._apply_catalog_snapshot, lambda: None, "无法更新分组")
 
     @Slot(bool)
     def reloadTools(self, show_issues: bool = True) -> None:
-        current = self._selected_id
-        try:
-            snapshot = self.application.refresh(previous_statuses=self._statuses)
-        except (CatalogError, OSError) as exc:
-            self.dialogRequested.emit("配置索引不可用", str(exc), "error")
-            return
-        self._apply_catalog_snapshot(snapshot.catalog)
-        issues = snapshot.catalog.issues
-        self._statuses = snapshot.runtime.statuses
-        status_failures = [f"{issue.tool_name}: {issue.message}" for issue in snapshot.runtime.issues]
-        self._selected_id = current if current in self._tools else ""
-        self._sync_model(current)
-        if self._selected_id:
-            self._reset_log_tailer()
-        if show_issues:
-            if issues or status_failures:
-                config_messages = [f"{issue.path.name}: {issue.message}" for issue in issues]
-                message = "\n".join([*config_messages, *status_failures])
-                self.dialogRequested.emit("配置或状态读取异常", message, "warning")
-            else:
+        def completed(snapshot: CatalogSnapshot) -> None:
+            self._apply_catalog_snapshot(snapshot)
+            if snapshot.issues and (show_issues or snapshot.layout_error):
+                self.dialogRequested.emit("配置读取异常", "\n".join(f"{issue.path.name}: {issue.message}" for issue in snapshot.issues), "warning")
+            elif show_issues:
                 self.toastRequested.emit("配置索引已重载", "success")
+        self._queue_catalog(lambda app: app.refresh_catalog(), completed, lambda: None, "配置索引不可用")
 
     @Slot()
     def refreshStatus(self) -> None:
+        if self.process_service is not None:
+            self.process_service.refresh()
+            return
         try:
             runtime = self.application.inspect_statuses(
                 self._tools,
@@ -686,24 +821,7 @@ class AppBridge(QObject):
                     self._reset_log_tailer()
             except (ConfigError, ProcessError) as exc:
                 self.dialogRequested.emit("无法重启", str(exc), "error")
-        for tool_id, status in updated.items():
-            previous = self._statuses.get(tool_id)
-            tool = self._tools.get(tool_id)
-            if previous is None or tool is None or previous.state == status.state:
-                continue
-            if status.state == "running" and previous.state in {"starting", "unready"}:
-                self.toastRequested.emit(f"{tool.name} 已就绪 · PID {status.pid}", "success")
-            elif status.state == "unready" and previous.state == "starting":
-                tail = self.application.log_tail(tool_id)
-                message = status.message or "启动探测超时，进程仍在运行"
-                if tail:
-                    message += f"\n\n最近日志：\n{tail}"
-                message += f"\n\n完整日志：{self.application.log_path(tool_id)}"
-                self.dialogRequested.emit(f"{tool.name} 启动超时", message, "warning")
-            elif status.state == "exited" and previous.state in {"starting", "unready"}:
-                message = status.message or f"进程在启动期间退出，退出码 {status.exit_code}"
-                message += f"\n\n完整日志：{self.application.log_path(tool_id)}"
-                self.dialogRequested.emit(f"{tool.name} 未能启动", message, "error")
+        self._report_transitions(updated)
         self._statuses = updated
         self._sync_model(status_only=True)
 
@@ -711,6 +829,9 @@ class AppBridge(QObject):
         return self._tools.get(self._selected_id)
 
     def _start(self, tool: ToolConfig, verb: str) -> None:
+        if self.process_service is not None:
+            self._request_operation(tool, "start")
+            return
         try:
             status = self.application.start(tool.id)
         except (ConfigError, ProcessError) as exc:
@@ -736,6 +857,9 @@ class AppBridge(QObject):
         tool = self._selected_tool()
         if tool is None:
             return
+        if self.process_service is not None:
+            self._request_operation(tool, "stop")
+            return
         try:
             self.application.stop_begin(tool.id)
         except ProcessError as exc:
@@ -748,6 +872,9 @@ class AppBridge(QObject):
     def restartSelected(self) -> None:
         tool = self._selected_tool()
         if tool is None:
+            return
+        if self.process_service is not None:
+            self._request_operation(tool, "restart")
             return
         status = self._statuses.get(tool.id)
         if status is None:
@@ -770,6 +897,11 @@ class AppBridge(QObject):
 
     @Slot()
     def stopAll(self) -> None:
+        if self.process_service is not None:
+            for tool in self._tools.values():
+                if self._statuses.get(tool.id, ToolStatus(tool.id, "error")).active:
+                    self._request_operation(tool, "stop")
+            return
         failures = self.application.stop_all_begin()
         self._pending_restart.clear()
         if failures:
@@ -780,6 +912,15 @@ class AppBridge(QObject):
 
     @Slot()
     def startAutostart(self) -> None:
+        if self.process_service is not None:
+            self._autostart_requested = True
+            if self._autostart_done or not self._catalog_ready or any(key not in self._statuses for key in self._tools):
+                return
+            self._autostart_done = True
+            for tool in self._tools.values():
+                if tool.autostart and self._statuses[tool.id].state in {"stopped", "exited"}:
+                    self._request_operation(tool, "start")
+            return
         issues = self.application.start_autostart()
         self.refreshStatus()
         if issues:
@@ -799,12 +940,12 @@ class AppBridge(QObject):
 
     @Slot(result="QVariantMap")
     def newToolDraft(self) -> dict[str, Any]:
-        return self.application.new_draft()
+        return new_tool_draft(self._tools)
 
     @Slot(result="QVariantMap")
     def selectedToolDraft(self) -> dict[str, Any]:
         tool = self._selected_tool()
-        return self.application.tool_draft(tool.id) if tool is not None else {}
+        return tool_to_draft(tool) if tool is not None else {}
 
     @staticmethod
     def _parse_env(text: str) -> dict[str, str]:
@@ -812,63 +953,58 @@ class AppBridge(QObject):
 
     @Slot("QVariantMap", result=bool)
     def saveToolDraft(self, draft: dict[str, Any]) -> bool:
-        original_id = str(draft.get("originalId", "")).strip()
+        return self._save_draft(draft, self._saved_tool)
+
+    def _saved_tool(self, tool: ToolConfig) -> None:
+        self.toastRequested.emit(f"{tool.name} 已写入配置索引", "success")
+
+    def _save_draft(self, draft: dict[str, Any], after_save: Callable[[ToolConfig], None]) -> bool:
         tool_id = str(draft.get("id", "")).strip()
-        if original_id and tool_id != original_id:
-            self.dialogRequested.emit("无法保存", "已登记工具的 ID 不可更改", "error")
-            return False
-        if bool(draft.get("setupRequired", False)) and not bool(draft.get("rawMode", False)):
+        if draft.get("setupRequired") and not draft.get("rawMode"):
             self.dialogRequested.emit("需要准备环境", "请先确认并完成环境准备，再写入工具配置", "warning")
+            self.toolSaveFinished.emit(tool_id, False)
             return False
         try:
             tool = tool_from_draft(draft)
-            snapshot = self.application.save_draft(draft)
-        except (CatalogError, ConfigError, OSError, TypeError, ValueError) as exc:
+            original_id = str(draft.get("originalId", "")).strip()
+            if original_id and original_id != tool.id:
+                raise ConfigError("已登记工具的 ID 不可更改")
+        except (ConfigError, TypeError, ValueError) as exc:
             self.dialogRequested.emit("无法保存工具", str(exc), "error")
+            self.toolSaveFinished.emit(tool_id, False)
             return False
-        self._apply_catalog_snapshot(snapshot)
-        self._statuses = self.application.inspect_statuses(
-            self._tools,
-            previous_statuses=self._statuses,
-        ).statuses
-        self._sync_model(self._selected_id)
-        self.layoutChanged.emit()
-        self.selectTool(tool.id)
-        self._reset_log_tailer()
-        self.toastRequested.emit(f"{tool.name} 已写入配置索引", "success")
-        return True
+        def completed(snapshot: CatalogSnapshot) -> None:
+            self._apply_catalog_snapshot(snapshot)
+            self.selectTool(tool.id)
+            self._reset_log_tailer()
+            self.toolSaveFinished.emit(tool.id, True)
+            after_save(tool)
+        return self._queue_catalog(
+            lambda app: app.save_tool(tool, overwrite=bool(original_id)), completed,
+            lambda: self.toolSaveFinished.emit(tool.id, False), "无法保存工具",
+        )
 
     @Slot("QVariantMap", result=bool)
     def saveAndStartToolDraft(self, draft: dict[str, Any]) -> bool:
-        tool_id = str(draft.get("id", "")).strip()
-        if not self.saveToolDraft(draft):
-            return False
-        tool = self._tools.get(tool_id)
-        if tool is not None:
-            self._start(tool, "启动")
-        return True
+        return self._save_draft(draft, lambda tool: self._start(tool, "启动"))
 
     @Slot()
     def deleteSelected(self) -> None:
         tool = self._selected_tool()
         if tool is None:
             return
-        status = self._statuses.get(tool.id, ToolStatus(tool.id, "stopped"))
-        if status.active:
-            self.dialogRequested.emit("无法删除", "工具仍在运行，请先停止该单元", "warning")
+        status = self._statuses.get(tool.id)
+        if status is None or status.active or status.state == "error":
+            self.dialogRequested.emit("无法删除", "请确认工具已停止且状态可读", "warning")
             return
-        try:
-            self.application.delete_tool(tool.id)
-        except (CatalogError, ConfigError, OSError) as exc:
-            self.dialogRequested.emit("无法删除工具", str(exc), "error")
-            return
-        name = tool.name
-        self._apply_catalog_snapshot(self.application.catalog_snapshot())
-        self._statuses.pop(tool.id, None)
-        self._sync_model(self._selected_id)
-        self.layoutChanged.emit()
-        self._reset_log_tailer()
-        self.toastRequested.emit(f"{name} 已从配置索引移除；磁盘日志保留", "warning")
+        def remove(app: ToolDeckApplication) -> CatalogSnapshot:
+            app.delete_tool(tool.id)
+            return app.catalog_snapshot()
+        def completed(snapshot: CatalogSnapshot) -> None:
+            self._apply_catalog_snapshot(snapshot)
+            self._reset_log_tailer()
+            self.toastRequested.emit(f"{tool.name} 已从配置索引移除；磁盘日志保留", "warning")
+        self._queue_catalog(remove, completed, lambda: None, "无法删除工具")
 
     @staticmethod
     def command_for_launch_path(
@@ -897,54 +1033,61 @@ class AppBridge(QObject):
 
     @Slot(str, str, result="QVariantMap")
     def launchDraftForPath(self, value: str, shell: str) -> dict[str, Any]:
-        source = self._path_from_url(value)
-        if not source.is_file():
-            return {}
+        if self.process_service is not None:
+            raise ProcessError("请使用 requestLaunchDraft 异步检测入口")
         try:
-            return self.application.launch_draft(source, shell or default_shell())
+            analysis = self.application.analyze_launch(self._path_from_url(value))
+            return launch_patch_for_analysis(analysis, self._tools)
         except ConfigError as exc:
             self.dialogRequested.emit("无法识别启动入口", str(exc), "error")
             return {}
 
+    @Slot(str)
+    def requestLaunchDraft(self, value: str) -> None:
+        source = self._path_from_url(value)
+        def completed(result: QueryValue) -> None:
+            if not isinstance(result, LaunchAnalysis):
+                raise TypeError("启动检测必须返回 LaunchAnalysis")
+            self.launchDraftReady.emit(value, launch_patch_for_analysis(result, self._tools))
+        self._queue_query(lambda app: app.analyze_launch(source), completed, lambda: self.launchDraftReady.emit(value, {}), "无法识别启动入口")
+
     @Slot(str, result=str)
     def prepareEnvironmentForPath(self, value: str) -> str:
         source = self._path_from_url(value)
-        try:
-            analysis = self.application.analyze_launch(source)
-        except (ConfigError, OSError) as exc:
-            self.dialogRequested.emit("无法准备环境", str(exc), "error")
-            return ""
-        if analysis.blocking or analysis.plan is None:
-            messages = [check.message for check in analysis.checks if check.level == "blocking"]
-            self.dialogRequested.emit("无法准备环境", "\n".join(messages) or "启动入口检测失败", "error")
-            return ""
-        setup = analysis.plan.setup
-        if setup is None:
-            patch = self.application.launch_draft(source)
-            self.setupFinished.emit(
-                {
-                    "token": "",
-                    "success": True,
-                    "cancelled": False,
-                    "message": "现有环境已经可用",
-                    "logPath": "",
-                    "source": str(source),
-                    "patch": patch,
-                }
-            )
-            return ""
         token = secrets.token_hex(12)
         cancel_event = threading.Event()
-        task = _SetupTask(token, self.application, setup, cancel_event)
-        task.signals.started.connect(self._setup_started)
-        task.signals.progress.connect(self._setup_progress)
-        task.signals.finished.connect(self._setup_finished)
-        self._setup_tasks[token] = (task, cancel_event, source)
-        QThreadPool.globalInstance().start(task)
+        self._setup_analyses[token] = cancel_event
+        def failed() -> None:
+            self._setup_analyses.pop(token, None)
+            self.setupFinished.emit({"token": token, "success": False, "cancelled": cancel_event.is_set(), "message": "环境准备未能开始", "source": str(source)})
+        def completed(result: QueryValue) -> None:
+            self._setup_analyses.pop(token, None)
+            if cancel_event.is_set():
+                failed()
+                return
+            if not isinstance(result, LaunchAnalysis):
+                raise TypeError("启动检测必须返回 LaunchAnalysis")
+            if result.blocking or result.plan is None:
+                raise ConfigError("；".join(check.message for check in result.checks if check.level == "blocking"))
+            setup = result.plan.setup
+            if setup is None:
+                patch = launch_patch_for_analysis(result, self._tools)
+                self.setupFinished.emit({"token": token, "success": True, "cancelled": False, "message": "现有环境已经可用", "source": str(source), "patch": patch})
+                return
+            task = _SetupTask(token, self.application, setup, cancel_event)
+            task.signals.started.connect(self._setup_started)
+            task.signals.progress.connect(self._setup_progress)
+            task.signals.finished.connect(self._setup_finished)
+            self._setup_tasks[token] = (task, cancel_event, source)
+            self._setup_pool.start(task)
+        self._queue_query(lambda app: app.analyze_launch(source), completed, failed, "无法准备环境")
         return token
 
     @Slot(str, result=bool)
     def cancelEnvironmentPreparation(self, token: str) -> bool:
+        if token in self._setup_analyses:
+            self._setup_analyses[token].set()
+            return True
         entry = self._setup_tasks.get(str(token))
         if entry is None:
             return False
@@ -966,79 +1109,54 @@ class AppBridge(QObject):
     @Slot(str, object)
     def _setup_finished(self, token: str, result: object) -> None:
         entry = self._setup_tasks.pop(token, None)
-        if entry is None:
+        if entry is None or self._closed:
             return
         source = entry[2]
-        success = bool(getattr(result, "success", False))
-        patch: dict[str, Any] = {}
-        if success:
-            try:
-                patch = self.application.launch_draft(source)
-                launch = patch.get("launch")
-                if isinstance(launch, dict):
-                    launch["managed_environment"] = True
-            except (ConfigError, OSError) as exc:
-                success = False
-                result = exc
         message = str(getattr(result, "message", result))
-        log_path = getattr(result, "log_path", "")
-        payload = {
-            "token": token,
-            "success": success,
-            "cancelled": bool(getattr(result, "cancelled", False)),
-            "message": message,
-            "logPath": str(log_path),
-            "source": str(source),
-            "patch": patch,
-        }
-        self.setupFinished.emit(payload)
-        if success:
+        log_path = str(getattr(result, "log_path", ""))
+        cancelled = bool(getattr(result, "cancelled", False))
+        if not bool(getattr(result, "success", False)):
+            self.setupFinished.emit({"token": token, "success": False, "cancelled": cancelled, "message": message, "logPath": log_path, "source": str(source)})
+            if not cancelled:
+                self.dialogRequested.emit("环境准备失败", message + f"\n\n完整日志：{log_path}", "error")
+            return
+        def completed(analysis: QueryValue) -> None:
+            if not isinstance(analysis, LaunchAnalysis):
+                raise TypeError("启动检测必须返回 LaunchAnalysis")
+            patch = launch_patch_for_analysis(analysis, self._tools)
+            patch["launch"]["managed_environment"] = True
+            self.setupFinished.emit({"token": token, "success": True, "cancelled": False, "message": message, "logPath": log_path, "source": str(source), "patch": patch})
             self.toastRequested.emit("项目环境准备完成", "success")
-        elif payload["cancelled"]:
-            self.toastRequested.emit("环境准备已取消；未写入工具配置", "warning")
-        else:
-            detail = message + (f"\n\n完整日志：{log_path}" if log_path else "")
-            self.dialogRequested.emit("环境准备失败", detail, "error")
+        self._queue_query(
+            lambda app: app.analyze_launch(source), completed,
+            lambda: self.setupFinished.emit({"token": token, "success": False, "cancelled": False, "message": "环境准备后验证失败", "logPath": log_path}),
+            "环境准备后验证失败",
+        )
 
     @Slot(str)
     def prepareImport(self, value: str) -> None:
         source = self._path_from_url(value)
-        if not source.is_file():
-            self.dialogRequested.emit("无法导入", f"文件不存在：{source}", "error")
-            return
-        try:
-            plan = self.application.plan_import(source)
-        except ConfigError as exc:
-            self.dialogRequested.emit("无法读取配置", str(exc), "error")
-            return
-        if plan.kind == "config":
-            candidate = plan.candidate
-            if candidate is None:
-                return
-            if plan.overwrite_required:
-                self.importOverwriteRequested.emit(str(source), candidate.id, candidate.name)
-            else:
-                self._import_toml(source, False)
-            return
-        if plan.draft is not None:
-            self.editorRequested.emit("import", plan.draft)
+        def completed(result: QueryValue) -> None:
+            if not isinstance(result, ImportPlan):
+                raise TypeError("导入规划必须返回 ImportPlan")
+            if result.kind == "config" and result.candidate is not None:
+                if result.overwrite_required:
+                    self.importOverwriteRequested.emit(str(source), result.candidate.id, result.candidate.name)
+                else:
+                    self._import_toml(source, False)
+            elif result.draft is not None:
+                self.editorRequested.emit("import", result.draft)
+        self._queue_query(lambda app: app.plan_import(source), completed, lambda: None, "无法读取配置")
 
     def _import_toml(self, source: Path, overwrite: bool) -> None:
-        try:
-            tool = self.application.import_tool(source, overwrite=overwrite)
-        except (CatalogError, ConfigError, OSError) as exc:
-            self.dialogRequested.emit("无法导入配置", str(exc), "error")
-            return
-        self._apply_catalog_snapshot(self.application.catalog_snapshot())
-        self._statuses = self.application.inspect_statuses(
-            self._tools,
-            previous_statuses=self._statuses,
-        ).statuses
-        self._sync_model(self._selected_id)
-        self.layoutChanged.emit()
-        self.selectTool(tool.id)
-        self._reset_log_tailer()
-        self.toastRequested.emit(f"{tool.name} 已导入配置索引", "success")
+        def perform(app: ToolDeckApplication) -> CatalogSnapshot:
+            app.import_tool(source, overwrite=overwrite)
+            return app.catalog_snapshot()
+        def completed(snapshot: CatalogSnapshot) -> None:
+            self._apply_catalog_snapshot(snapshot)
+            self.selectTool(source.stem)
+            self.toastRequested.emit(f"{source.stem} 已导入配置索引", "success")
+        self._queue_catalog(perform, completed, lambda: None, "无法导入配置")
 
     @Slot(str)
     def confirmImportOverwrite(self, value: str) -> None:
@@ -1124,40 +1242,71 @@ class AppBridge(QObject):
         QDesktopServices.openUrl(url)
 
     def _reset_log_tailer(self) -> None:
+        self.log_model.clear()
+        if self.log_service is not None:
+            self._set_log_text("")
+            self.log_service.select(paths.log_file(self._selected_id) if self._selected_id else None)
+            return
         if not self._selected_id:
             self._tailer = None
-            self.log_model.clear()
             self._set_log_text("")
             return
-        self._tailer = LogTailer(self.application.log_path(self._selected_id))
-        self._tailer.seek_tail()
-        self.log_model.clear()
+        self._tailer = LogTailer(paths.log_file(self._selected_id))
+        self._tailer.seek_tail(512 * 1024)
         self._set_log_text("")
         self._tail_log()
 
     def _tail_log(self) -> None:
-        if self._tailer is None:
+        if self.log_service is not None:
+            self.log_service.read()
             return
-        chunk = self._tailer.read()
-        if chunk:
-            clean = strip_ansi(chunk)
-            self.log_model.append_text(clean)
-            self._set_log_text(self._log_text + clean)
+        if self._tailer is not None:
+            try:
+                self._apply_log_batch(self._tailer.read_batch())
+            except OSError as exc:
+                self.dialogRequested.emit("日志读取失败", str(exc), "error")
+
+    @Slot(object)
+    def _receive_log(self, delivery: LogDelivery) -> None:
+        if delivery.error:
+            self.dialogRequested.emit("日志读取失败", delivery.error, "error")
+            return
+        self._apply_log_batch(delivery.batch)
+
+
+    def _apply_log_batch(self, batch: LogBatch) -> None:
+        self.log_model.append_batch(batch)
+        previous = self._log_preview
+        if batch.reset:
+            self._set_log_text("")
+            previous = ""
+        if not batch.completed and batch.preview == previous:
+            return
+        remove = len(previous)
+        base = self._log_text[:-remove] if remove else self._log_text
+        addition = batch.completed + batch.preview
+        merged = base + addition
+        self._log_text = merged[-self.LOG_TEXT_LIMIT:]
+        self._log_preview = batch.preview
+        self.logChanged.emit()
+
 
     @Slot()
     def clearVisibleLog(self) -> None:
-        if self._tailer is not None:
-            try:
-                self._tailer.offset = self._tailer.path.stat().st_size
-            except FileNotFoundError:
-                self._tailer.reset()
-        message = "DISPLAY BUFFER CLEARED / PERSISTENT RECORD RETAINED"
-        self.log_model.clear(message)
-        self._set_log_text(f"{message}\n")
+        if self.log_service is not None:
+            self.log_service.clear()
+        elif self._tailer is not None:
+            self._tailer.seek_end()
+        self.log_model.clear("DISPLAY BUFFER CLEARED / PERSISTENT RECORD RETAINED")
+        self._set_log_text("DISPLAY BUFFER CLEARED / PERSISTENT RECORD RETAINED\n")
         self.toastRequested.emit("仅清除当前显示；磁盘日志未删除", "success")
 
     @Slot()
     def queryHardware(self) -> None:
+        if self.hardware_service is not None:
+            if not self._hardware_paused:
+                self.hardware_service.read()
+            return
         if self._hardware_paused:
             return
         telemetry = dict(self._telemetry)
@@ -1188,7 +1337,54 @@ class AppBridge(QObject):
                 ],
             )
 
+    @Slot(object)
+    def _hardware_ready(self, sample: HardwareSample) -> None:
+        if self._hardware_paused or self._closed:
+            return
+        telemetry = dict(self._telemetry)
+        cpu = sample.cpu
+        memory = sample.memory
+        available = 0
+        telemetry["cpuValue"] = cpu if cpu is not None else -1.0
+        telemetry["cpuText"] = f"{cpu:.0f}%" if cpu is not None else ("读取失败" if sample.cpu_error else "采样中")
+        telemetry["cpuDetail"] = sample.cpu_error
+        if cpu is not None:
+            available += 1
+        if memory is None:
+            telemetry.update(memoryValue=-1.0, memoryText="不可用", memoryDetail=sample.memory_error)
+        else:
+            telemetry.update(memoryValue=memory[0], memoryText=f"{memory[0]:.0f}%", memoryDetail=memory[1])
+            available += 1
+        self._base_hardware_metrics = available
+        self._telemetry = telemetry
+        self.telemetryChanged.emit()
+
+        if shutil.which("nvidia-smi") is None:
+            self._set_gpu_unavailable("未安装 nvidia-smi；此查询仅支持 NVIDIA")
+            return
+        if self.gpu_process.state() == QProcess.ProcessState.NotRunning:
+            self._gpu_failure = ""
+            self.gpu_timeout.start(2500)
+            self.gpu_process.start(
+                "nvidia-smi",
+                [
+                    "--query-gpu=utilization.gpu,memory.used,memory.total,name",
+                    "--format=csv,noheader,nounits",
+                ],
+            )
+
+
+    def _gpu_timed_out(self) -> None:
+        self._gpu_failure = "nvidia-smi 查询超过 2.5 秒；可在硬件菜单重新查询"
+        self.gpu_process.kill()
+        self._set_gpu_unavailable(self._gpu_failure)
+
+
     def _gpu_finished(self, exit_code: int, _status: QProcess.ExitStatus) -> None:
+        self.gpu_timeout.stop()
+        if self._gpu_failure:
+            self._set_gpu_unavailable(self._gpu_failure)
+            return
         if self._hardware_paused:
             return
         raw = bytes(self.gpu_process.readAllStandardOutput()).decode(errors="replace")
@@ -1260,7 +1456,7 @@ class AppBridge(QObject):
         if self._allow_close or not self.trayAvailable:
             self.shutdown()
             return True
-        settings = QSettings("ToolDeck", "ToolDeck")
+        settings = application_settings()
         if not settings.value("qml_tray_notice_shown", False, type=bool) and self._tray_icon is not None:
             self._tray_icon.showMessage(
                 "Lattice 仍在运行",
@@ -1277,12 +1473,28 @@ class AppBridge(QObject):
 
     @Slot()
     def shutdown(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        self._catalog_callbacks.clear()
+        self._query_callbacks.clear()
+        for cancel_event in self._setup_analyses.values():
+            cancel_event.set()
+        for _task, cancel_event, _source in self._setup_tasks.values():
+            cancel_event.set()
+        if not self._setup_pool.waitForDone(6000):
+            raise ProcessError("环境准备线程未在 6 秒内停止")
+        self.gpu_timeout.stop()
+        if self.process_service is not None:
+            self.process_service.shutdown()
+        if self.log_service is not None:
+            self.log_service.shutdown()
+        if self.hardware_service is not None:
+            self.hardware_service.shutdown()
         self.status_timer.stop()
         self.log_timer.stop()
         self.hardware_timer.stop()
         self.hardware_warmup_timer.stop()
-        for _task, cancel_event, _source in self._setup_tasks.values():
-            cancel_event.set()
         if self.gpu_process.state() != QProcess.ProcessState.NotRunning:
             self.gpu_process.kill()
             self.gpu_process.waitForFinished(1000)

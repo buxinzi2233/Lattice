@@ -12,6 +12,7 @@ from tooldeck.util import fmt_duration, short_home
 
 
 STATE_LABELS = {
+    "error": "状态异常",
     "starting": "正在启动",
     "running": "运行中",
     "unready": "启动超时",
@@ -21,6 +22,7 @@ STATE_LABELS = {
 }
 
 STATE_COLORS = {
+    "error": "#ec5a36",
     "starting": "#f0c928",
     "running": "#16b8a6",
     "unready": "#ec5a36",
@@ -30,6 +32,7 @@ STATE_COLORS = {
 }
 
 _STOPPED_STATUS = ToolStatus("", "stopped")
+_ATTENTION_STATES = frozenset({"exited", "unready", "error"})
 
 
 class ToolListModel(QAbstractListModel):
@@ -203,7 +206,7 @@ class ToolListModel(QAbstractListModel):
             return False
         if self._filter_state == "stopped" and status.state != "stopped":
             return False
-        if self._filter_state == "exited" and status.state != "exited":
+        if self._filter_state == "exited" and status.state not in _ATTENTION_STATES:
             return False
         query = self._filter_text.casefold().strip()
         if not query:
@@ -274,7 +277,7 @@ class ToolListModel(QAbstractListModel):
         states = [self._statuses.get(tool_id, _STOPPED_STATUS) for tool_id in self._tools]
         self._running_count = sum(status.active for status in states)
         self._idle_count = sum(status.state == "stopped" for status in states)
-        self._exited_count = sum(status.state == "exited" for status in states)
+        self._exited_count = sum(status.state in _ATTENTION_STATES for status in states)
         rebuilt = self._rebuild() if group_changed or search_fields_changed or status_filter_changed else False
         changed_ids: set[str] = set()
         if rebuilt:

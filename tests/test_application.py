@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-import shlex
+import tempfile
+
+import os
+import venv
 from pathlib import Path
 
 import pytest
@@ -53,7 +56,7 @@ def test_application_coordinates_commands_without_frontend_types():
     application = ToolDeckApplication(runtime=runtime)
     assert application.api_version == APPLICATION_API_VERSION == 2
     application.refresh_catalog()
-    application.save_tool(ToolConfig("worker", "Worker", "sleep 1", "/tmp"), overwrite=False)
+    application.save_tool(ToolConfig("worker", "Worker", "sleep 1", tempfile.gettempdir()), overwrite=False)
 
     started = application.start("worker")
     assert started.pid == 7001
@@ -73,7 +76,7 @@ def test_application_owns_drafts_and_import_planning(tmp_path):
     application = ToolDeckApplication(runtime=RecordingRuntime())
     application.refresh_catalog()
     draft = application.new_draft()
-    draft.update(id="demo", name="Demo", cwd="/tmp", cmd="echo ready")
+    draft.update(id="demo", name="Demo", cwd=tempfile.gettempdir(), cmd="echo ready")
     application.save_draft(draft)
     assert application.tool_draft("demo")["name"] == "Demo"
 
@@ -96,17 +99,16 @@ def test_python_import_prefers_nearby_project_virtualenv(tmp_path):
     script = project / "ComfyUI" / "main.py"
     script.parent.mkdir(parents=True)
     script.write_text("print('ready')\n", encoding="utf-8")
-    interpreter = project / "venv" / "bin" / "python"
-    interpreter.parent.mkdir(parents=True)
-    interpreter.write_text("#!/bin/sh\n", encoding="utf-8")
-    interpreter.chmod(0o755)
+    environment = project / "venv"
+    venv.EnvBuilder(with_pip=False).create(environment)
+    interpreter = environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
 
     application = ToolDeckApplication(runtime=RecordingRuntime())
     application.refresh_catalog()
     plan = application.plan_import(script)
 
     assert plan.draft is not None
-    assert shlex.split(plan.draft["cmd"]) == [str(interpreter), str(script)]
+    assert plan.draft["launch"]["argv"] == [str(interpreter), str(script)]
     assert plan.draft["cwd"] == str(script.parent)
     assert plan.draft["setupRequired"] is False
 
@@ -146,18 +148,19 @@ def test_application_rechecks_structured_entry_before_every_start(tmp_path):
     assert runtime.started == []
 
 
-def test_status_query_preserves_previous_state_when_a_port_fails():
+def test_status_query_reports_unreadable_state_when_a_port_fails():
     class FailingRuntime(RecordingRuntime):
         def status(self, tool_id: str) -> ToolStatus:
             raise OSError("state disk unavailable")
 
     application = ToolDeckApplication(runtime=FailingRuntime())
     application.refresh_catalog()
-    application.save_tool(ToolConfig("worker", "Worker", "true", "/tmp"), overwrite=False)
+    application.save_tool(ToolConfig("worker", "Worker", "true", tempfile.gettempdir()), overwrite=False)
     previous = {"worker": ToolStatus("worker", "running", pid=4321)}
 
     result = application.inspect_statuses(previous_statuses=previous, tick=True)
-    assert result.statuses["worker"] == previous["worker"]
+    assert result.statuses["worker"].state == "error"
+    assert result.statuses["worker"].message == "state disk unavailable"
     assert result.issues[0].tool_name == "Worker"
     assert "state disk unavailable" in result.issues[0].message
     assert application.runtime.ticks == 1

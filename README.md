@@ -64,7 +64,7 @@ Tool TOMLs live in `~/.config/tooldeck/tools.d/` on Linux and `%APPDATA%\tooldec
     stop_signal = "TERM"
     stop_timeout = 15
 
-The `group` field owns group membership. `layout.json` only owns group order, tool order, and collapsed state. A corrupt layout is preserved as `layout.json.corrupt-*` before deterministic recovery.
+The `group` field owns group membership. `layout.json` only owns group order, tool order, and collapsed state. A corrupt layout is reported without overwriting the file; repair the reported file or move it aside before reloading the configuration.
 
 Newly detected tools also store optional `[launch]` and `[readiness]` tables. Existing TOMLs without those tables remain valid and continue to use `cmd` plus `shell`.
 
@@ -72,6 +72,7 @@ Newly detected tools also store optional `[launch]` and `[readiness]` tables. Ex
 
     uv sync --frozen --extra dev
     QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software uv run pytest -q
-    qmllint src/tooldeck/gui/qml/Main.qml src/tooldeck/gui/qml/components/*.qml
+    uv run ruff check src tests
+    uv run pyside6-qmllint src/tooldeck/gui/qml/Main.qml src/tooldeck/gui/qml/components/*.qml
 
 Lattice source code is MIT licensed. Official artwork, trademarks, character names, story text, quotes, and other third-party materials are excluded from that license and are not distributed in this repository or release archives.

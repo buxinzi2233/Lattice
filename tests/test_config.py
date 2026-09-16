@@ -60,7 +60,7 @@ def test_structured_launch_and_readiness_round_trip(tmp_path):
     destination = save(tool)
 
     assert load_file(destination) == tool
-    text = destination.read_text()
+    text = destination.read_text(encoding="utf-8")
     assert "[launch]" in text
     assert "[readiness]" in text
 
@@ -68,7 +68,7 @@ def test_structured_launch_and_readiness_round_trip(tmp_path):
 def test_legacy_config_does_not_require_new_tables():
     destination = save(ToolConfig("legacy", "Legacy", "echo ready", "/tmp"))
 
-    assert "[launch]" not in destination.read_text()
+    assert "[launch]" not in destination.read_text(encoding="utf-8")
     assert load_file(destination).launch is None
 
 

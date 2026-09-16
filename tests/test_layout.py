@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import pytest
 
 from tooldeck import paths
 from tooldeck.config import ToolConfig, load_file, save
 from tooldeck.gui.bridge import AppBridge
-from tooldeck.layout import LayoutState, load as load_layout, reconcile, save as save_layout
+from tooldeck.layout import LayoutError, repair, LayoutState, load as load_layout, reconcile, save as save_layout
 
 
 
@@ -38,9 +39,12 @@ def test_layout_atomic_save_and_corrupt_recovery_preserves_backup():
     save_layout(paths.layout_json(), state)
     assert json.loads(paths.layout_json().read_text(encoding="utf-8"))["version"] == 1
     paths.layout_json().write_text("{not valid", encoding="utf-8")
-    recovered = load_layout(paths.layout_json())
-    assert recovered == LayoutState()
-    assert list(paths.config_dir().glob("layout.json.corrupt-*"))
+    with pytest.raises(LayoutError, match="无法读取布局"):
+        load_layout(paths.layout_json())
+    assert paths.layout_json().read_text(encoding="utf-8") == "{not valid"
+    backup = repair(paths.layout_json())
+    assert backup.read_text(encoding="utf-8") == "{not valid"
+    assert load_layout(paths.layout_json()) == LayoutState()
 
 
 def test_bridge_moves_tools_groups_and_collapses(qapp):

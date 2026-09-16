@@ -19,6 +19,9 @@ Popup {
     property var setupCommands: []
     property string sourcePath: ""
     property bool rawMode: false
+    property bool saving: false
+    property string savingId: ""
+    property string requestedSource: ""
     property bool advancedExpanded: false
     property bool setupRequired: false
     property bool setupNetwork: false
@@ -36,6 +39,7 @@ Popup {
     }
 
     function openWith(nextMode, data) {
+        requestedSource = ""
         mode = nextMode
         originalId = String(read(data, "originalId", ""))
         idField.text = String(read(data, "id", "tool"))
@@ -129,9 +133,11 @@ Popup {
             "setupNetwork": setupNetwork,
             "setupCommands": setupCommands
         }
-        var saved = mode === "edit" ? bridge.saveToolDraft(payload) : bridge.saveAndStartToolDraft(payload)
-        if (saved)
-            close()
+        savingId = payload.id
+        saving = true
+        var accepted = mode === "edit" ? bridge.saveToolDraft(payload) : bridge.saveAndStartToolDraft(payload)
+        if (!accepted)
+            saving = false
     }
 
     parent: Overlay.overlay
@@ -142,7 +148,7 @@ Popup {
     modal: true
     focus: true
     padding: 0
-    closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
+    closePolicy: saving ? Popup.NoAutoClose : Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
     Overlay.modal: Rectangle { color: Theme.scrimStrong }
 
@@ -763,6 +769,7 @@ Popup {
 
                 ActionButton {
                     visible: editor.mode === "edit"
+                    enabled: !editor.saving
                     iconName: "close"
                     label: "删除"
                     kind: "danger"
@@ -772,13 +779,13 @@ Popup {
                     }
                 }
                 Item { Layout.fillWidth: true }
-                ActionButton { label: "取消"; onClicked: editor.close() }
+                ActionButton { label: "取消"; enabled: !editor.saving; onClicked: editor.close() }
                 ActionButton {
                     objectName: "editorPrimaryAction"
                     iconName: editor.mode === "edit" ? "arrow" : "play"
                     label: editor.mode === "edit" ? "保存" : "添加并启动"
                     kind: "command"
-                    enabled: !editor.setupRunning && (!editor.setupRequired || editor.rawMode) && nameField.text.trim().length > 0 && (editor.rawMode ? commandField.text.trim().length > 0 : editor.launchData !== null)
+                    enabled: !editor.saving && !editor.setupRunning && (!editor.setupRequired || editor.rawMode) && nameField.text.trim().length > 0 && (editor.rawMode ? commandField.text.trim().length > 0 : editor.launchData !== null)
                     onClicked: editor.submit()
                 }
             }
@@ -800,6 +807,19 @@ Popup {
 
     Connections {
         target: editor.bridge
+
+        function onLaunchDraftReady(source, patch) {
+            if (editor.visible && String(source) === editor.requestedSource)
+                editor.applyLaunchPatch(patch)
+        }
+
+        function onToolSaveFinished(toolId, success) {
+            if (!editor.saving || String(toolId) !== editor.savingId)
+                return
+            editor.saving = false
+            if (success)
+                editor.close()
+        }
 
         function onSetupProgressChanged(event) {
             if (!event || String(event.token) !== editor.setupToken)
@@ -833,8 +853,8 @@ Popup {
         title: "选择程序或脚本"
         nameFilters: ["程序、脚本或本机程序 (*.exe *.bat *.cmd *.ps1 *.py *.sh *)", "所有文件 (*)"]
         onAccepted: {
-            var patch = editor.bridge.launchDraftForPath(selectedFile.toString(), shellField.text)
-            editor.applyLaunchPatch(patch)
+            editor.requestedSource = selectedFile.toString()
+            editor.bridge.requestLaunchDraft(editor.requestedSource)
         }
     }
 }

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tempfile
+
 import subprocess
 import sys
 import time
@@ -12,7 +14,7 @@ from PySide6.QtQml import QQmlEngine, QQmlExpression
 from PySide6.QtTest import QSignalSpy, QTest
 
 from tooldeck import paths
-from tooldeck.config import ToolConfig, load_file, save
+from tooldeck.config import default_shell, ToolConfig, load_file, save
 from tooldeck.gui.app import create_engine, icon_path
 from tooldeck.gui.bridge import AppBridge
 from tooldeck.procs import ToolStatus
@@ -129,9 +131,9 @@ def test_tool_model_lists_searches_and_filters(qapp):
 
 
 def test_tool_model_groups_orders_and_searches(qapp):
-    save(ToolConfig("ungrouped", "Loose Tool", "true", "/tmp"))
-    save(ToolConfig("trainer", "Trainer", "true", "/tmp", group="02 TRAINING"))
-    save(ToolConfig("runtime", "Runtime", "true", "/tmp", group="01 SERVICES"))
+    save(ToolConfig("ungrouped", "Loose Tool", "true", tempfile.gettempdir()))
+    save(ToolConfig("trainer", "Trainer", "true", tempfile.gettempdir(), group="02 TRAINING"))
+    save(ToolConfig("runtime", "Runtime", "true", tempfile.gettempdir(), group="01 SERVICES"))
     bridge = build_bridge()
 
     assert [bridge.model.get(row)["toolId"] for row in range(3)] == ["runtime", "trainer", "ungrouped"]
@@ -147,7 +149,7 @@ def test_tool_model_groups_orders_and_searches(qapp):
 
 
 def test_status_refresh_is_incremental_and_keeps_selection_identity(qapp):
-    save(ToolConfig("steady", "Steady Unit", "sleep 1", "/tmp"))
+    save(ToolConfig("steady", "Steady Unit", "sleep 1", tempfile.gettempdir()))
     manager = FixedManager(
         {
             "steady": ToolStatus(
@@ -230,8 +232,8 @@ def test_bridge_tool_editor_round_trip(qapp):
         "demo",
         "演示",
         "echo hello\nsleep 1",
-        "/tmp",
-        "/usr/bin/fish",
+        tempfile.gettempdir(),
+        default_shell(),
         {"PORT": "1234"},
         True,
         "INT",
@@ -248,9 +250,9 @@ def test_bridge_tool_editor_round_trip(qapp):
         "id": "demo",
         "name": "演示",
         "group": "模型训练",
-        "cwd": str(Path("/tmp")),
+        "cwd": str(Path(tempfile.gettempdir())),
         "cmd": "echo hello\nsleep 1",
-        "shell": "/usr/bin/fish",
+        "shell": default_shell(),
         "envText": "PORT=1234",
         "autostart": True,
         "stopSignal": "INT",
@@ -288,7 +290,7 @@ def test_bridge_rejects_invalid_environment_without_writing(qapp):
     errors: list[tuple[str, str, str]] = []
     bridge.dialogRequested.connect(lambda title, message, kind: errors.append((title, message, kind)))
     draft = bridge.newToolDraft()
-    draft.update(id="broken", name="Broken", cwd="/tmp", cmd="echo ok", envText="MISSING_SEPARATOR")
+    draft.update(id="broken", name="Broken", cwd=tempfile.gettempdir(), cmd="echo ok", envText="MISSING_SEPARATOR")
 
     assert bridge.saveToolDraft(draft) is False
     assert not paths.tool_toml("broken").exists()
@@ -361,8 +363,8 @@ def test_launch_command_cross_platform_contract(tmp_path):
 
 
 def test_bridge_start_stop_restart_and_autostart(qapp):
-    save(ToolConfig("manual", "Manual", "sleep 1", "/tmp"))
-    save(ToolConfig("auto", "Auto", "sleep 1", "/tmp", autostart=True))
+    save(ToolConfig("manual", "Manual", "sleep 1", tempfile.gettempdir()))
+    save(ToolConfig("auto", "Auto", "sleep 1", tempfile.gettempdir(), autostart=True))
     manager = FixedManager()
     bridge = build_bridge(manager)
 
@@ -388,7 +390,7 @@ def test_bridge_start_stop_restart_and_autostart(qapp):
 
 
 def test_bridge_log_view_clear_preserves_disk_log(qapp):
-    save(ToolConfig("logger", "Logger", "echo log", "/tmp"))
+    save(ToolConfig("logger", "Logger", "echo log", tempfile.gettempdir()))
     paths.log_file("logger").write_text("\x1b[31mfirst\x1b[0m\nsecond\n", encoding="utf-8")
     bridge = build_bridge()
     bridge.selectTool("logger")
@@ -407,7 +409,7 @@ def test_bridge_log_view_clear_preserves_disk_log(qapp):
 
 
 def test_bridge_copies_visible_log_and_preserves_clipboard_when_empty(qapp):
-    save(ToolConfig("logger", "Logger", "echo log", "/tmp"))
+    save(ToolConfig("logger", "Logger", "echo log", tempfile.gettempdir()))
     paths.log_file("logger").write_text("\x1b[31mfirst\x1b[0m\nsecond\n", encoding="utf-8")
     bridge = build_bridge()
     bridge.selectTool("logger")
@@ -433,7 +435,7 @@ def test_bridge_copies_visible_log_and_preserves_clipboard_when_empty(qapp):
 
 
 def test_bridge_opens_full_log_with_visible_feedback(qapp, monkeypatch):
-    save(ToolConfig("logger", "Logger", "echo log", "/tmp"))
+    save(ToolConfig("logger", "Logger", "echo log", tempfile.gettempdir()))
     log_path = paths.log_file("logger")
     log_path.write_text("persistent output\n", encoding="utf-8")
     bridge = build_bridge()
@@ -475,7 +477,7 @@ def test_bridge_opens_only_setup_logs_from_the_state_directory(qapp, monkeypatch
 
 
 def test_startup_timeout_and_exit_dialogs_include_complete_log_path(qapp):
-    save(ToolConfig("service", "Service", "sleep 1", "/tmp"))
+    save(ToolConfig("service", "Service", "sleep 1", tempfile.gettempdir()))
     log_path = paths.log_file("service")
     log_path.write_text("boot output\n", encoding="utf-8")
     manager = FixedManager({"service": ToolStatus("service", "starting", pid=4321)})
@@ -549,8 +551,8 @@ def test_hardware_sample_emits_one_telemetry_update(qapp, monkeypatch):
 
 
 def test_qml_engine_loads_new_workspace_without_warnings(qapp):
-    save(ToolConfig("one", "工具一", "sleep 1", "/tmp", group="模型训练"))
-    save(ToolConfig("two", "工具二", "sleep 1", "/tmp", group="常驻服务"))
+    save(ToolConfig("one", "工具一", "sleep 1", tempfile.gettempdir(), group="模型训练"))
+    save(ToolConfig("two", "工具二", "sleep 1", tempfile.gettempdir(), group="常驻服务"))
     bridge = build_bridge()
     bridge.setTheme("lattice-day")
     bridge.setFontScale(1.0)
@@ -593,7 +595,7 @@ def test_qml_engine_loads_new_workspace_without_warnings(qapp):
         "editorAdvancedExecution",
         "editorRawMode",
         "editorPrimaryAction",
-        "fontScalePanel",
+        "fontScaleSection",
         "fontScaleSlider",
         "fontScaleValue",
         "themeSelector",
@@ -761,8 +763,8 @@ def test_editor_setup_progress_unlocks_structured_add_flow(qapp, tmp_path):
 
 
 def test_archive_shell_loads_and_switches_without_runtime_warnings(qapp):
-    save(ToolConfig("one", "工具一", "sleep 1", "/tmp", group="模型训练"))
-    save(ToolConfig("two", "工具二", "sleep 1", "/tmp", group="常驻服务"))
+    save(ToolConfig("one", "工具一", "sleep 1", tempfile.gettempdir(), group="模型训练"))
+    save(ToolConfig("two", "工具二", "sleep 1", tempfile.gettempdir(), group="常驻服务"))
     paths.log_file("one").write_text("[12:34:56] INFO copy target\n", encoding="utf-8")
     bridge = build_bridge()
     bridge.selectTool("one")
@@ -921,8 +923,8 @@ def test_archive_shell_loads_and_switches_without_runtime_warnings(qapp):
 
 
 def test_motion_animations_stop_with_hidden_shells(qapp):
-    save(ToolConfig("one", "工具一", "sleep 1", "/tmp", group="模型训练"))
-    save(ToolConfig("two", "工具二", "sleep 1", "/tmp", group="常驻服务"))
+    save(ToolConfig("one", "工具一", "sleep 1", tempfile.gettempdir(), group="模型训练"))
+    save(ToolConfig("two", "工具二", "sleep 1", tempfile.gettempdir(), group="常驻服务"))
     bridge = build_bridge()
     bridge.setTheme("lattice-day")
     messages: list[str] = []

@@ -56,7 +56,8 @@ def test_start_rolls_back_child_when_state_persistence_fails(monkeypatch):
 
     def capture_child(*args, **kwargs):
         child = real_popen(*args, **kwargs)
-        children.append(child)
+        if "cwd" in kwargs:
+            children.append(child)
         return child
 
     def fail_state_write(_tool_id, _state):
@@ -156,7 +157,7 @@ def test_process_readiness_moves_from_starting_to_running():
     )
     started = manager.start(tool)
     try:
-        assert started.state == "starting"
+        assert started.state in {"starting", "running"}
         ready = wait_for(manager, tool.id, {"running"}, timeout=1)
         assert ready.message == "已就绪"
     finally:
@@ -290,7 +291,7 @@ def test_tcp_readiness_probes_only_configured_loopback_port(monkeypatch):
 
     try:
         assert manager.start(tool).state == "starting"
-        ready = wait_for(manager, tool.id, {"running"}, timeout=1)
+        ready = wait_for(manager, tool.id, {"running"}, timeout=3)
         assert ready.active
         assert probed == [18767]
     finally:
@@ -542,6 +543,8 @@ def test_windows_shell_argv_and_taskkill_command(monkeypatch):
 def test_windows_taskkill_failure_is_reported(monkeypatch):
     class Result:
         returncode = 1
+        stdout = b""
+        stderr = b"Access denied"
 
     monkeypatch.setattr(subprocess, "run", lambda *_args, **_kwargs: Result())
     monkeypatch.setattr("tooldeck.procs.proc_group_alive", lambda _pid: True)

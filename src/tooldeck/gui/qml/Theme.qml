@@ -49,7 +49,7 @@ QtObject {
             return telemetry
         if (state === "starting" || state === "stopping")
             return warning
-        if (state === "unready" || state === "exited")
+        if (state === "unready" || state === "exited" || state === "error")
             return danger
         return faint
     }

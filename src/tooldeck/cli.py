@@ -15,6 +15,7 @@ from .frontends import FrontendError, discover_frontends, run_frontend
 from .groups import display_group_name
 from .procs import ProcessError, ToolStatus
 from .util import disp_width, fmt_duration, pad
+from .tailer import LogTailer, tail_bytes
 
 
 def _tools_or_report(application: ToolDeckApplication) -> dict[str, ToolConfig]:
@@ -97,6 +98,7 @@ def _print_list(
         "starting": "正在启动",
         "running": "运行中",
         "unready": "启动超时",
+        "error": "状态异常",
         "stopping": "停止中",
         "stopped": "已停止",
         "exited": "已退出",
@@ -120,38 +122,28 @@ def _print_list(
 
 
 def _tail_lines(path: Path, count: int) -> bytes:
-    if count <= 0:
-        return b""
-    try:
-        data = path.read_bytes()
-    except FileNotFoundError:
-        return b""
-    return b"\n".join(data.splitlines()[-count:]) + (b"\n" if data else b"")
+    return tail_bytes(path, count)
 
 
 def _show_logs(log_path: Path, lines: int, follow: bool) -> None:
-    initial = _tail_lines(log_path, lines)
-    if initial:
-        sys.stdout.buffer.write(initial)
-        sys.stdout.buffer.flush()
+    tailer = LogTailer(log_path)
+    end = tailer.seek_lines(lines)
+    while tailer.offset < end:
+        previous = tailer.offset
+        batch = tailer.read_batch()
+        chunk = batch.completed + tailer.flush_pending()
+        sys.stdout.buffer.write(chunk.encode("utf-8"))
+        if batch.reset or tailer.offset <= previous:
+            break
+    sys.stdout.buffer.flush()
     if not follow:
         return
-    position = log_path.stat().st_size if log_path.exists() else 0
     try:
         while True:
-            try:
-                size = log_path.stat().st_size
-                if size < position:
-                    position = 0
-                if size > position:
-                    with log_path.open("rb") as handle:
-                        handle.seek(position)
-                        chunk = handle.read()
-                        position = handle.tell()
-                    sys.stdout.buffer.write(chunk)
-                    sys.stdout.buffer.flush()
-            except FileNotFoundError:
-                position = 0
+            chunk = tailer.read() + tailer.flush_pending()
+            if chunk:
+                sys.stdout.buffer.write(chunk.encode("utf-8"))
+                sys.stdout.buffer.flush()
             time.sleep(0.2)
     except KeyboardInterrupt:
         return
@@ -228,6 +220,8 @@ def main(argv: list[str] | None = None) -> int:
                 changes["env"] = _parse_env(args.env)
             if args.autostart is not None:
                 changes["autostart"] = args.autostart == "true"
+            if args.cmd is not None:
+                changes["launch"] = None
             application.save_tool(replace(old, **changes))
             print(f"已更新 {old.id}")
         elif args.action == "remove":

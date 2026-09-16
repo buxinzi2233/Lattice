@@ -42,16 +42,16 @@ def read_cpu_percent(last: tuple[int, int] | None) -> tuple[float | None, tuple[
     if os.name == "nt":
         current = _read_windows_cpu_times()
         if current is None:
-            return None, last
+            raise OSError("GetSystemTimes did not return CPU counters")
         idle, total = current
     else:
         try:
             fields = Path("/proc/stat").read_text(encoding="utf-8").splitlines()[0].split()[1:]
             values = [int(value) for value in fields]
-        except (OSError, ValueError, IndexError):
-            return None, last
+        except (OSError, ValueError, IndexError) as exc:
+            raise OSError(f"Cannot read CPU counters from /proc/stat: {exc}") from exc
         if len(values) < 4:
-            return None, last
+            raise OSError("Invalid /proc/stat: at least four CPU counters are required")
         idle = values[3] + (values[4] if len(values) > 4 else 0)
         total = sum(values)
     current = (idle, total)
@@ -62,7 +62,6 @@ def read_cpu_percent(last: tuple[int, int] | None) -> tuple[float | None, tuple[
         return None, current
     value = (1 - (idle - last[0]) / total_delta) * 100
     return max(0.0, min(100.0, value)), current
-
 
 def _read_windows_cpu_times() -> tuple[int, int] | None:
     if os.name != "nt":
@@ -84,9 +83,8 @@ def _read_windows_cpu_times() -> tuple[int, int] | None:
         ctypes.byref(kernel),
         ctypes.byref(user),
     ):
-        return None
+        raise ctypes.WinError()
     return idle.value(), kernel.value() + user.value()
-
 
 def read_memory() -> tuple[float, str] | None:
     if os.name == "nt":
@@ -97,14 +95,13 @@ def read_memory() -> tuple[float, str] | None:
             key, raw = line.split(":", 1)
             values[key] = int(raw.strip().split()[0])
         total = values["MemTotal"]
-        available = values.get("MemAvailable", values.get("MemFree", 0))
-    except (OSError, ValueError, KeyError):
-        return None
+        available = values["MemAvailable"]
+    except (OSError, ValueError, KeyError, IndexError) as exc:
+        raise OSError(f"Cannot read memory counters from /proc/meminfo: {exc}") from exc
     if total <= 0:
-        return None
+        raise OSError("Invalid /proc/meminfo: MemTotal must be positive")
     used = total - available
     return used / total * 100, f"{used / 1024 / 1024:.1f} / {total / 1024 / 1024:.1f} GiB"
-
 
 def _read_windows_memory() -> tuple[float, str] | None:
     if os.name != "nt":
@@ -128,9 +125,9 @@ def _read_windows_memory() -> tuple[float, str] | None:
     status = MemoryStatus()
     status.length = ctypes.sizeof(status)
     if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-        return None
+        raise ctypes.WinError()
     if status.total_physical <= 0:
-        return None
+        raise OSError("GlobalMemoryStatusEx returned a non-positive physical memory size")
     used = status.total_physical - status.available_physical
     gib = 1024**3
     return used / status.total_physical * 100, f"{used / gib:.1f} / {status.total_physical / gib:.1f} GiB"

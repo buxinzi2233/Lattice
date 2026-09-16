@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+
+from tooldeck.tailer import LogBatch
 
 from PySide6.QtCore import QAbstractListModel, QModelIndex, Property, Qt, Signal, Slot
 
@@ -90,6 +92,9 @@ class LogLineModel(QAbstractListModel):
         super().__init__(parent)
         self._max_lines = max(1, int(max_lines))
         self._lines: list[LogLine] = []
+        self._preview = False
+        self._preview_text = ""
+        self._max_characters = 256 * 1024
 
     def roleNames(self) -> dict[int, bytes]:
         return self._ROLES
@@ -114,12 +119,20 @@ class LogLineModel(QAbstractListModel):
         return len(self._lines)
 
     def append_text(self, text: str) -> int:
-        parsed = [entry for line in text.splitlines() if (entry := parse_log_line(line)) is not None]
+        parsed = [replace(entry, message=entry.message[-(self._max_characters - len(entry.timestamp) - len(entry.level)): ]) for line in text.splitlines() if (entry := parse_log_line(line)) is not None]
         if not parsed:
             return 0
-        if len(self._lines) + len(parsed) > self._max_lines:
+        combined = self._lines + parsed
+        total = sum(len(entry.message) + len(entry.timestamp) + len(entry.level) for entry in combined)
+        cut = max(0, len(combined) - self._max_lines)
+        total -= sum(len(entry.message) + len(entry.timestamp) + len(entry.level) for entry in combined[:cut])
+        while total > self._max_characters and cut < len(combined) - 1:
+            entry = combined[cut]
+            total -= len(entry.message) + len(entry.timestamp) + len(entry.level)
+            cut += 1
+        if cut:
             self.beginResetModel()
-            self._lines = (self._lines + parsed)[-self._max_lines :]
+            self._lines = combined[cut:]
             self.endResetModel()
         else:
             first = len(self._lines)
@@ -129,7 +142,26 @@ class LogLineModel(QAbstractListModel):
         self.countChanged.emit()
         return len(parsed)
 
+    def append_batch(self, batch: LogBatch) -> None:
+        if not batch.reset and not batch.completed and batch.preview == self._preview_text:
+            return
+        if batch.reset:
+            self.clear()
+        if self._preview and self._lines:
+            last = len(self._lines) - 1
+            self.beginRemoveRows(QModelIndex(), last, last)
+            self._lines.pop()
+            self.endRemoveRows()
+            self._preview = False
+            self.countChanged.emit()
+        self.append_text(batch.completed)
+        if batch.preview:
+            self._preview = self.append_text(batch.preview) > 0
+        self._preview_text = batch.preview
+
     def clear(self, message: str = "") -> None:
+        self._preview = False
+        self._preview_text = ""
         replacement = [LogLine("", "command", message)] if message else []
         if replacement == self._lines:
             return

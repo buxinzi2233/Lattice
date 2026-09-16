@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import tempfile
+
 import json
 from dataclasses import replace
 
@@ -12,8 +14,8 @@ from tooldeck.layout import LayoutState, load as load_layout, save as save_layou
 
 
 def test_catalog_keeps_ungrouped_and_literal_label_as_distinct_keys():
-    save(ToolConfig("loose", "Loose", "true", "/tmp"))
-    save(ToolConfig("named", "Named", "true", "/tmp", group="未分组"))
+    save(ToolConfig("loose", "Loose", "true", tempfile.gettempdir()))
+    save(ToolConfig("named", "Named", "true", tempfile.gettempdir(), group="未分组"))
 
     catalog = ToolCatalog()
     snapshot = catalog.refresh()
@@ -26,8 +28,8 @@ def test_catalog_keeps_ungrouped_and_literal_label_as_distinct_keys():
 
 
 def test_cross_group_move_rolls_back_tool_when_layout_write_fails(monkeypatch):
-    save(ToolConfig("one", "One", "true", "/tmp", group="A"))
-    save(ToolConfig("two", "Two", "true", "/tmp", group="B"))
+    save(ToolConfig("one", "One", "true", tempfile.gettempdir(), group="A"))
+    save(ToolConfig("two", "Two", "true", tempfile.gettempdir(), group="B"))
     original_layout = LayoutState(["A", "B"], {"A": ["one"], "B": ["two"]}, set())
     save_layout(paths.layout_json(), original_layout)
     original_layout_bytes = paths.layout_json().read_bytes()
@@ -50,7 +52,7 @@ def test_cross_group_move_rolls_back_tool_when_layout_write_fails(monkeypatch):
 
 
 def test_refresh_recovers_a_prepared_catalog_transaction():
-    original = ToolConfig("one", "One", "true", "/tmp", group="A")
+    original = ToolConfig("one", "One", "true", tempfile.gettempdir(), group="A")
     save(original)
     original_layout = LayoutState(["A"], {"A": ["one"]}, set())
     save_layout(paths.layout_json(), original_layout)
@@ -70,10 +72,10 @@ def test_refresh_recovers_a_prepared_catalog_transaction():
 def test_catalog_add_edit_delete_reconciles_layout():
     catalog = ToolCatalog()
     catalog.refresh()
-    catalog.save_tool(ToolConfig("one", "One", "true", "/tmp", group="A"), overwrite=False)
+    catalog.save_tool(ToolConfig("one", "One", "true", tempfile.gettempdir(), group="A"), overwrite=False)
     assert load_layout(paths.layout_json()).tool_order == {"A": ["one"]}
 
-    catalog.save_tool(ToolConfig("one", "One", "true", "/tmp", group="B"))
+    catalog.save_tool(ToolConfig("one", "One", "true", tempfile.gettempdir(), group="B"))
     assert load_layout(paths.layout_json()).tool_order == {"B": ["one"]}
 
     catalog.delete_tool("one")
@@ -87,8 +89,8 @@ def test_stale_catalog_instances_refresh_inside_mutation_lock():
     first.refresh()
     second.refresh()
 
-    first.save_tool(ToolConfig("one", "One", "true", "/tmp", group="A"), overwrite=False)
-    second.save_tool(ToolConfig("two", "Two", "true", "/tmp", group="B"), overwrite=False)
+    first.save_tool(ToolConfig("one", "One", "true", tempfile.gettempdir(), group="A"), overwrite=False)
+    second.save_tool(ToolConfig("two", "Two", "true", tempfile.gettempdir(), group="B"), overwrite=False)
 
     persisted = load_layout(paths.layout_json())
     assert persisted.group_order == ["A", "B"]
@@ -96,7 +98,7 @@ def test_stale_catalog_instances_refresh_inside_mutation_lock():
 
 
 def test_committed_journal_is_cleaned_without_rolling_back():
-    tool = ToolConfig("one", "One", "true", "/tmp", group="A")
+    tool = ToolConfig("one", "One", "true", tempfile.gettempdir(), group="A")
     save(tool)
     save_layout(paths.layout_json(), LayoutState(["A"], {"A": ["one"]}, set()))
     paths.catalog_journal_json().write_text(

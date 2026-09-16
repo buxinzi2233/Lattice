@@ -189,15 +189,9 @@ ApplicationWindow {
                 Item { Layout.fillHeight: true }
 
                 RailButton {
-                    iconName: "type"
-                    tip: "调整界面字号"
-                    active: fontScalePanel.opened
-                    Layout.alignment: Qt.AlignHCenter
-                    onClicked: fontScalePanel.opened ? fontScalePanel.close() : fontScalePanel.open()
-                }
-                RailButton {
+                    objectName: "interfaceSettingsAction"
                     iconName: "settings"
-                    tip: "启动与版权设置"
+                    tip: "界面与启动设置"
                     active: settingsPanel.opened
                     Layout.alignment: Qt.AlignHCenter
                     onClicked: settingsPanel.opened ? settingsPanel.close() : settingsPanel.open()
@@ -1002,145 +996,6 @@ ApplicationWindow {
         }
         onExitRequested: confirmPanel.ask("exit", "退出晶格中枢", "活动工具不会自动停止；仅退出 Lattice 控制界面。", "退出", "danger")
         onSettingsRequested: settingsPanel.opened ? settingsPanel.close() : settingsPanel.open()
-        onFontScaleRequested: fontScalePanel.opened ? fontScalePanel.close() : fontScalePanel.open()
-    }
-
-    Popup {
-        id: fontScalePanel
-        objectName: "fontScalePanel"
-        parent: Overlay.overlay
-        x: rail.width + 10
-        y: Math.max(16, root.height - height - 128)
-        width: 284
-        height: fontScaleContent.implicitHeight
-        padding: 0
-        focus: true
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-
-        background: Rectangle {
-            color: Theme.paperRaised
-            border.width: Theme.lineWidth
-            border.color: Theme.ink
-            radius: Theme.radiusSmall
-        }
-
-        contentItem: ColumnLayout {
-            id: fontScaleContent
-            spacing: 0
-
-            Rectangle {
-                Layout.fillWidth: true
-                Layout.preferredHeight: 46
-                color: Theme.ink
-
-                RowLayout {
-                    anchors.fill: parent
-                    anchors.leftMargin: 16
-                    anchors.rightMargin: 14
-                    spacing: 8
-
-                    Text {
-                        text: "INTERFACE TYPE"
-                        color: Theme.white
-                        font.family: Theme.mono
-                        font.pixelSize: Theme.sp(10)
-                        font.weight: Font.Bold
-                    }
-                    Item { Layout.fillWidth: true }
-                    Text {
-                        id: fontScaleValue
-                        objectName: "fontScaleValue"
-                        text: Math.round(AppBridge.fontScale * 100) + "%"
-                        color: Theme.telemetry
-                        font.family: Theme.mono
-                        font.pixelSize: Theme.sp(13)
-                        font.weight: Font.Bold
-                    }
-                }
-            }
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                Layout.margins: 16
-                spacing: 12
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 9
-
-                    ActionButton {
-                        iconName: "minus"
-                        tip: "减小字号"
-                        onClicked: AppBridge.setFontScale(AppBridge.fontScale - 0.05)
-                    }
-                    Slider {
-                        id: fontScaleSlider
-                        objectName: "fontScaleSlider"
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 38
-                        from: 0.80
-                        to: 1.50
-                        stepSize: 0.01
-                        value: AppBridge.fontScale
-                        snapMode: Slider.SnapAlways
-                        live: true
-                        Accessible.name: "界面字号"
-                        onMoved: AppBridge.setFontScale(value)
-
-                        background: Rectangle {
-                            x: fontScaleSlider.leftPadding
-                            y: fontScaleSlider.topPadding + fontScaleSlider.availableHeight / 2 - height / 2
-                            width: fontScaleSlider.availableWidth
-                            height: 4
-                            color: Theme.line
-
-                            Rectangle {
-                                width: fontScaleSlider.visualPosition * parent.width
-                                height: parent.height
-                                color: Theme.command
-                            }
-                        }
-                        handle: Rectangle {
-                            x: fontScaleSlider.leftPadding + fontScaleSlider.visualPosition * (fontScaleSlider.availableWidth - width)
-                            y: fontScaleSlider.topPadding + fontScaleSlider.availableHeight / 2 - height / 2
-                            implicitWidth: 14
-                            implicitHeight: 22
-                            color: fontScaleSlider.pressed ? Theme.command : Theme.ink
-                            border.width: Theme.lineWidth
-                            border.color: Theme.paperRaised
-                            radius: Theme.radiusTiny
-                        }
-                    }
-                    ActionButton {
-                        iconName: "plus"
-                        tip: "增大字号"
-                        onClicked: AppBridge.setFontScale(AppBridge.fontScale + 0.05)
-                    }
-                }
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    Text { text: "80%"; color: Theme.muted; font.family: Theme.mono; font.pixelSize: Theme.sp(9) }
-                    Item { Layout.fillWidth: true }
-                    ActionButton {
-                        iconName: "refresh"
-                        label: "100%"
-                        tip: "恢复默认字号"
-                        onClicked: AppBridge.setFontScale(1.0)
-                    }
-                    Item { Layout.fillWidth: true }
-                    Text { text: "150%"; color: Theme.muted; font.family: Theme.mono; font.pixelSize: Theme.sp(9) }
-                }
-            }
-        }
-
-        enter: Transition {
-            ParallelAnimation {
-                NumberAnimation { property: "opacity"; from: 0; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
-                NumberAnimation { property: "scale"; from: 0.98; to: 1; duration: Theme.normal; easing.type: Theme.easeEnter }
-            }
-        }
-        exit: Transition { NumberAnimation { property: "opacity"; to: 0; duration: Theme.fast; easing.type: Theme.easeExit } }
     }
 
     Popup {
@@ -1226,6 +1081,98 @@ ApplicationWindow {
                         color: Theme.faint
                         font.family: Theme.mono
                         font.pixelSize: Theme.sp(9)
+                    }
+                    Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
+                    ColumnLayout {
+                        objectName: "fontScaleSection"
+                        Layout.fillWidth: true
+                        spacing: 12
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "界面缩放"; color: Theme.text; font.family: Theme.condensed; font.pixelSize: Theme.sp(22); font.weight: Font.Bold }
+                            Item { Layout.fillWidth: true }
+                            Text {
+                                id: fontScaleValue
+                                objectName: "fontScaleValue"
+                                text: Math.round(AppBridge.fontScale * 100) + "%"
+                                color: Theme.telemetry
+                                font.family: Theme.mono
+                                font.pixelSize: Theme.sp(13)
+                                font.weight: Font.Bold
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            spacing: 9
+
+                            ActionButton {
+                                objectName: "fontScaleDecrease"
+                                iconName: "minus"
+                                tip: "减小字号"
+                                onClicked: AppBridge.setFontScale(AppBridge.fontScale - 0.05)
+                            }
+                            Slider {
+                                id: fontScaleSlider
+                                objectName: "fontScaleSlider"
+                                Layout.fillWidth: true
+                                Layout.preferredHeight: 38
+                                from: 0.80
+                                to: 1.50
+                                stepSize: 0.01
+                                value: AppBridge.fontScale
+                                snapMode: Slider.SnapAlways
+                                live: true
+                                Accessible.name: "界面字号"
+                                onMoved: AppBridge.setFontScale(value)
+
+                                background: Rectangle {
+                                    x: fontScaleSlider.leftPadding
+                                    y: fontScaleSlider.topPadding + fontScaleSlider.availableHeight / 2 - height / 2
+                                    width: fontScaleSlider.availableWidth
+                                    height: 4
+                                    color: Theme.line
+
+                                    Rectangle {
+                                        width: fontScaleSlider.visualPosition * parent.width
+                                        height: parent.height
+                                        color: Theme.command
+                                    }
+                                }
+                                handle: Rectangle {
+                                    x: fontScaleSlider.leftPadding + fontScaleSlider.visualPosition * (fontScaleSlider.availableWidth - width)
+                                    y: fontScaleSlider.topPadding + fontScaleSlider.availableHeight / 2 - height / 2
+                                    implicitWidth: 14
+                                    implicitHeight: 22
+                                    color: fontScaleSlider.pressed ? Theme.command : Theme.ink
+                                    border.width: Theme.lineWidth
+                                    border.color: Theme.paperRaised
+                                    radius: Theme.radiusTiny
+                                }
+                            }
+                            ActionButton {
+                                objectName: "fontScaleIncrease"
+                                iconName: "plus"
+                                tip: "增大字号"
+                                onClicked: AppBridge.setFontScale(AppBridge.fontScale + 0.05)
+                            }
+                        }
+
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "80%"; color: Theme.muted; font.family: Theme.mono; font.pixelSize: Theme.sp(9) }
+                            Item { Layout.fillWidth: true }
+                            ActionButton {
+                                objectName: "fontScaleReset"
+                                iconName: "refresh"
+                                label: "100%"
+                                tip: "恢复默认字号"
+                                onClicked: AppBridge.setFontScale(1.0)
+                            }
+                            Item { Layout.fillWidth: true }
+                            Text { text: "150%"; color: Theme.muted; font.family: Theme.mono; font.pixelSize: Theme.sp(9) }
+                        }
                     }
                     Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: Theme.line }
                     Text { text: "启动动画"; color: Theme.text; font.family: Theme.condensed; font.pixelSize: Theme.sp(22); font.weight: Font.Bold }

@@ -20,7 +20,9 @@ from pathlib import Path
 from typing import Literal, Protocol
 
 from . import paths
-from .config import LaunchConfig, ReadinessConfig, ToolConfig, default_shell
+from .config import LaunchConfig, ReadinessConfig, ToolConfig
+from .storage import exclusive_file_lock
+from .util import proc_group_alive
 
 
 ENTRY_POINT_GROUP = "tooldeck.launch_detectors"
@@ -134,18 +136,25 @@ class LaunchDetector(Protocol):
     def detect(self, source: Path, context: DetectionContext) -> LaunchPlan | None: ...
 
 
+def _environment_root(executable: Path) -> Path | None:
+    parent = executable.expanduser().absolute().parent
+    for directory in (parent, parent.parent):
+        if (directory / "pyvenv.cfg").is_file():
+            return directory.resolve()
+    return None
+
+
 def _same_path(left: str | Path, right: str | Path) -> bool:
+    """Compare Python environments before following executable symlinks."""
     left_path = Path(left).expanduser()
     right_path = Path(right).expanduser()
-    try:
-        if left_path.exists() and right_path.exists() and os.path.samefile(left_path, right_path):
-            return True
-    except OSError:
-        pass
-    try:
-        return left_path.resolve() == right_path.resolve()
-    except (OSError, RuntimeError):
-        return os.path.abspath(os.fspath(left)) == os.path.abspath(os.fspath(right))
+    left_environment = _environment_root(left_path)
+    right_environment = _environment_root(right_path)
+    if left_environment is not None or right_environment is not None:
+        return left_environment == right_environment
+    if left_path.exists() and right_path.exists():
+        return os.path.samefile(left_path, right_path)
+    return left_path.resolve() == right_path.resolve()
 
 
 def _is_executable(path: Path, platform_name: str) -> bool:
@@ -219,6 +228,8 @@ def _base_python(source: Path, context: DetectionContext) -> str | None:
         context.which(name)
         for name in (("python", "python3", "py") if context.platform_name == "nt" else ("python3", "python"))
     )
+    if context.tooldeck_python == Path(sys.executable).absolute() and sys.prefix != sys.base_prefix:
+        candidates.append(sys._base_executable)
     for candidate in candidates:
         if candidate and not _same_path(candidate, context.tooldeck_python):
             return candidate
@@ -607,7 +618,7 @@ def analyze_launch(
     checks: list[LaunchCheck] = []
     if not selected.is_file():
         return LaunchAnalysis(selected, None, (LaunchCheck("source", "blocking", f"入口文件不存在：{selected}"),))
-    context = DetectionContext(platform_name or os.name, (tooldeck_python or Path(sys.executable)).resolve(), which)
+    context = DetectionContext(platform_name or os.name, (tooldeck_python or Path(sys.executable)).absolute(), which)
     if detectors is None:
         detected, plugin_issues = discover_launch_detectors(entry_points_provider=entry_points_provider)
         checks.extend(plugin_issues)
@@ -688,7 +699,7 @@ def preflight_tool(
     which: Callable[[str], str | None] = shutil.which,
 ) -> PreflightReport:
     selected_platform = platform_name or os.name
-    selected_tooldeck_python = (tooldeck_python or Path(sys.executable)).resolve()
+    selected_tooldeck_python = (tooldeck_python or Path(sys.executable)).absolute()
     checks: list[LaunchCheck] = []
     uses_tooldeck_python = False
     cwd = Path(tool.cwd).expanduser()
@@ -735,37 +746,45 @@ def preflight_tool(
     return PreflightReport(tuple(checks))
 
 
+class SetupCancellationError(RuntimeError):
+    """A setup process tree could not be terminated within its deadline."""
+
+
 def _terminate_setup_process(process: subprocess.Popen[bytes]) -> None:
     if process.poll() is not None:
         return
     try:
         if os.name == "nt":
-            subprocess.run(
-                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False,
+            command = ["taskkill", "/PID", str(process.pid), "/T", "/F"]
+            result = subprocess.run(
+                command, stdin=subprocess.DEVNULL, capture_output=True,
+                timeout=3.0, check=False,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
             )
+            if result.returncode != 0 and process.poll() is None:
+                raise SetupCancellationError(
+                    f"取消环境准备失败：{command!r}，退出码 {result.returncode}，"
+                    f"stdout={result.stdout!r}，stderr={result.stderr!r}"
+                )
         else:
-            os.killpg(process.pid, signal.SIGTERM)
-    except (OSError, ProcessLookupError):
-        pass
-    try:
-        process.wait(timeout=2.0)
-    except subprocess.TimeoutExpired:
-        try:
-            if os.name == "nt":
-                process.kill()
-            else:
-                os.killpg(process.pid, signal.SIGKILL)
-        except (OSError, ProcessLookupError):
-            pass
-        try:
-            process.wait(timeout=2.0)
-        except subprocess.TimeoutExpired:
-            pass
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                pass
+            if proc_group_alive(process.pid):
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        process.wait(timeout=1.0)
+        if os.name != "nt" and proc_group_alive(process.pid):
+            raise SetupCancellationError(f"取消环境准备失败：进程组 {process.pid} 仍存活")
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise SetupCancellationError(f"无法终止环境准备进程树 PID {process.pid}：{exc}") from exc
 
 
 def execute_setup(
@@ -779,6 +798,20 @@ def execute_setup(
 ) -> PreparationResult:
     if not confirmed:
         return PreparationResult(False, False, None, log_path, "环境准备必须由用户明确确认")
+    if cancel_event is not None and cancel_event.is_set():
+        return PreparationResult(False, True, None, log_path, "环境准备已取消")
+    lock_path = _setup_incomplete_marker(plan.environment_dir).with_suffix(".lock")
+    with exclusive_file_lock(lock_path, 2.0, cancel_event):
+        return _execute_setup_locked(plan, log_path, cancel_event, progress, started)
+
+
+def _execute_setup_locked(
+    plan: SetupPlan,
+    log_path: Path,
+    cancel_event: threading.Event | None,
+    progress: Callable[[int, int, str], None] | None,
+    started: Callable[[Path], None] | None,
+) -> PreparationResult:
     log_path.parent.mkdir(parents=True, exist_ok=True)
     total = len(plan.commands)
     with log_path.open("ab", buffering=0) as output:
@@ -835,7 +868,11 @@ def execute_setup(
                 return PreparationResult(False, False, None, log_path, f"无法执行环境准备：{exc}")
             while process.poll() is None:
                 if cancel_event is not None and cancel_event.is_set():
-                    _terminate_setup_process(process)
+                    try:
+                        _terminate_setup_process(process)
+                    except SetupCancellationError as exc:
+                        output.write((str(exc) + "\n").encode())
+                        return PreparationResult(False, False, process.returncode, log_path, str(exc))
                     output.write(b"cancelled\n")
                     return PreparationResult(False, True, process.returncode, log_path, "环境准备已取消")
                 time.sleep(0.1)
@@ -847,6 +884,21 @@ def execute_setup(
             message = "环境准备完成但缺少预期文件：" + ", ".join(str(path) for path in missing)
             output.write((message + "\n").encode())
             return PreparationResult(False, False, 0, log_path, message)
+        if plan.detector == "python":
+            interpreter = _environment_python(plan.environment_dir, os.name)
+            try:
+                validation = subprocess.run(
+                    [str(interpreter), "-I", "-X", "utf8", "-c", "import sys; print(sys.prefix)"],
+                    stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                    encoding="utf-8", errors="replace", timeout=3.0, check=False,
+                    env=child_environment,
+                )
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                return PreparationResult(False, False, None, log_path, f"项目解释器验证失败：{exc}")
+            if validation.returncode != 0 or Path(validation.stdout.strip()).resolve() != plan.environment_dir.resolve():
+                message = f"项目解释器身份验证失败：{interpreter}，退出码 {validation.returncode}，stdout={validation.stdout!r}，stderr={validation.stderr!r}"
+                output.write((message + "\n").encode())
+                return PreparationResult(False, False, validation.returncode, log_path, message)
         if incomplete_marker is not None:
             try:
                 incomplete_marker.unlink(missing_ok=True)

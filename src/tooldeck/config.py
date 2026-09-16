@@ -5,10 +5,10 @@ import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Literal, Mapping
+from typing import Literal, Mapping
 
 from . import paths
-from .storage import atomic_write_bytes, atomic_write_text
+from .storage import atomic_create_text, atomic_write_text
 from .util import valid_id
 
 
@@ -72,7 +72,7 @@ class ToolConfig:
     readiness: ReadinessConfig = field(default_factory=ReadinessConfig)
 
     @classmethod
-    def from_mapping(cls, tool_id: str, raw: dict[str, Any]) -> "ToolConfig":
+    def from_mapping(cls, tool_id: str, raw: Mapping[str, object]) -> "ToolConfig":
         if not valid_id(tool_id):
             raise ConfigError("工具 ID 只能包含字母、数字、点、下划线和连字符")
 
@@ -174,7 +174,7 @@ class ToolConfig:
         if not isinstance(readiness_raw, dict):
             raise ConfigError("readiness 必须是 TOML 表")
         readiness_mode = readiness_raw.get("mode", "auto")
-        if readiness_mode not in {"auto", "process", "http", "tcp"}:
+        if not isinstance(readiness_mode, str) or readiness_mode not in {"auto", "process", "http", "tcp"}:
             raise ConfigError("readiness.mode 仅支持 auto、process、http 或 tcp")
 
         def readiness_number(key: str, default: float, *, minimum: float, maximum: float) -> float:
@@ -262,9 +262,7 @@ def _toml_string(value: str) -> str:
 
 
 def _toml_command(value: str) -> str:
-    # A literal multiline string keeps shell scripts readable and preserves $, \ and quotes.
-    if "\n" in value and "'''" not in value and "\x00" not in value:
-        return "'''" + value + "'''"
+    # Escaped basic strings preserve leading newlines and all shell syntax.
     return _toml_string(value)
 
 
@@ -281,7 +279,7 @@ def dumps(tool: ToolConfig) -> str:
         f"shell = {_toml_string(tool.shell)}",
         f"autostart = {'true' if tool.autostart else 'false'}",
         f"stop_signal = {_toml_string(tool.stop_signal)}",
-        f"stop_timeout = {tool.stop_timeout:g}",
+        f"stop_timeout = {tool.stop_timeout!r}",
     ]
     if tool.env:
         lines.extend(("", "[env]"))
@@ -306,8 +304,8 @@ def dumps(tool: ToolConfig) -> str:
                 "",
                 "[readiness]",
                 f"mode = {_toml_string(tool.readiness.mode)}",
-                f"grace_seconds = {tool.readiness.grace_seconds:g}",
-                f"timeout_seconds = {tool.readiness.timeout_seconds:g}",
+                f"grace_seconds = {tool.readiness.grace_seconds!r}",
+                f"timeout_seconds = {tool.readiness.timeout_seconds!r}",
                 f"health_url = {_toml_string(tool.readiness.health_url)}",
             )
         )
@@ -356,7 +354,12 @@ def save(tool: ToolConfig, *, overwrite: bool = True) -> Path:
     if destination.exists() and not overwrite:
         raise ConfigError(f"工具 {checked.id} 已存在")
     data = dumps(checked)
-    return atomic_write_text(destination, data)
+    if overwrite:
+        return atomic_write_text(destination, data)
+    try:
+        return atomic_create_text(destination, data)
+    except FileExistsError as exc:
+        raise ConfigError(f"工具 {checked.id} 已存在") from exc
 
 
 def delete(tool_id: str) -> None:
@@ -376,7 +379,7 @@ def import_toml(source: Path, *, overwrite: bool = False) -> ToolConfig:
     if destination.exists() and not overwrite:
         raise ConfigError(f"工具 {tool.id} 已存在")
     try:
-        atomic_write_bytes(destination, source.read_bytes())
+        save(tool, overwrite=overwrite)
     except OSError as exc:
         raise ConfigError(str(exc)) from exc
     return tool

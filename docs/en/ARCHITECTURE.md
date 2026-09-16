@@ -39,8 +39,8 @@ Dependencies follow the arrows inward. Every frontend depends on `ToolDeckApplic
 
 - Tool TOMLs own configuration and the raw `group` key. `layout.json` owns group order, tool order, and collapsed state only.
 - The empty string is the ungrouped key. The visible “未分组” label is not a key; a custom group with that literal name is disambiguated in presentation.
-- File payloads are completed and synced in a same-directory temporary file before atomic replacement.
-- GUI and CLI share an inter-process catalog lock; every mutation reloads the latest snapshot while holding it, preventing crossed writes between entry points.
+- File payloads are completed and synced in a same-directory temporary file before atomic replacement. Creation uses an atomic link to prevent overwriting a concurrent creator.
+- GUI and CLI share an inter-process catalog lock with a two-second deadline and shutdown cancellation; every mutation reloads the latest snapshot while holding it. A corrupt layout returns `layout_error`: tools remain readable and stoppable, but catalog mutations fail explicitly.
 - A mutation spanning TOML and layout writes a `prepared` snapshot to `.catalog-transaction.json`, commits both files, marks the journal `committed`, then removes it.
 - Startup restores a `prepared` transaction and only cleans a `committed` transaction, so interruption cannot leave half of a group move.
 - `ProcManager` registers a child only after runtime state is durable. A state-write failure terminates the new process tree and records `START-ROLLBACK`.
@@ -50,7 +50,7 @@ Dependencies follow the arrows inward. Every frontend depends on `ToolDeckApplic
 
 `ToolDeckApplication` is the stable frontend/backend boundary and only accepts or returns plain Python types. Its current `api_version` is `2`. `CatalogPort` and `RuntimePort` are structural protocols, allowing tests, remote proxies, or alternate persistence implementations without inheriting Qt classes.
 
-Application snapshots combine `CatalogSnapshot` and `StatusSnapshot`. Runtime read failures are returned as `RuntimeIssue` values and may retain status supplied by the frontend. Draft saving, import planning, autostart, active-delete protection, layout moves, and process commands all belong to the facade.
+Application snapshots combine `CatalogSnapshot` and `StatusSnapshot`. Runtime read failures are returned as `RuntimeIssue` values and mark the affected tool as `error`, so stale status is not presented as current. Draft saving, import planning, autostart, active-delete protection, layout moves, and process commands all belong to the facade.
 
 ## Launch Detectors And Preflight
 
@@ -83,6 +83,10 @@ Use `tooldeck frontends` to inspect discovered adapters and `tooldeck --frontend
 ## Qt And Theme Boundaries
 
 `AppBridge` remains the stable public Qt adapter. It may own selection, timers, QProcess instances, signals, and window lifecycle. Catalog persistence, group transactions, shell command generation, system sampling, and file-manager branching belong to composed services.
+
+With the real runtime, one `ProcessService` thread calls the application facade for catalog I/O, launch analysis, and process commands. Duplicate commands for a pending tool are rejected and status polls are coalesced. `saveToolDraft()` acknowledges queueing; `toolSaveFinished(id, success)` reports persistence, and the editor closes only on success. File analysis uses `requestLaunchDraft()` and `launchDraftReady`; synchronous adapters may call the application API directly.
+
+HTTP/TCP probes use at most four background tasks without holding process locks and commit only to the matching `run_id`. The log service reads up to 64 KiB per request and rejects stale generations after selection or clearing; the view retains at most 2000 rows and 256 KiB characters. Hardware sampling is independent. Environment setup uses a separate task pool and target lock, validates the interpreter through its actual `sys.prefix`, and cancels unfinished work on shutdown.
 
 `themes.py` discovers and validates versioned JSON packs. Built-ins live in `theme_packs/`; user packs live in `~/.config/tooldeck/themes.d/` (or the Windows configuration equivalent). Packs may use `extends`, override selected semantic tokens, and inherit a `shell` that selects the trusted built-in `operations` or `archive` QML layout. Invalid packs are isolated and reported. User packs never load arbitrary QML; `gui/qml/Theme.qml` stores injected tokens but does not own a fixed palette or load files.
 

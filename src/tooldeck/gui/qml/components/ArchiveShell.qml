@@ -59,7 +59,6 @@ Item {
     signal stopAllRequested()
     signal exitRequested()
     signal settingsRequested()
-    signal fontScaleRequested()
 
     function value(key, fallback) {
         var current = selectedData ? selectedData[key] : undefined
@@ -462,7 +461,7 @@ Item {
                         ArchiveIconButton { anchors.verticalCenter: parent.verticalCenter; iconName: "upload"; kind: "dark"; tip: "导入工具或配置"; onClicked: shell.importRequested() }
                         ArchiveIconButton { visible: shell.showOptionalCommands; anchors.verticalCenter: parent.verticalCenter; iconName: "refresh"; kind: "dark"; tip: "重载配置索引"; onClicked: shell.bridge.reloadTools(true) }
                         ArchiveIconButton { visible: shell.showOptionalCommands; anchors.verticalCenter: parent.verticalCenter; iconName: "folder"; kind: "dark"; tip: "打开配置目录"; onClicked: shell.bridge.openConfigDirectory() }
-                        ArchiveIconButton { anchors.verticalCenter: parent.verticalCenter; iconName: "settings"; kind: "dark"; tip: "主题与启动设置"; onClicked: shell.settingsRequested() }
+                        ArchiveIconButton { objectName: "archiveSettingsAction"; anchors.verticalCenter: parent.verticalCenter; iconName: "settings"; kind: "dark"; tip: "界面与启动设置"; onClicked: shell.settingsRequested() }
                         Rectangle { anchors.verticalCenter: parent.verticalCenter; width: 1; height: 32; color: Theme.lineDark }
                         ArchiveIconButton { anchors.verticalCenter: parent.verticalCenter; iconName: "power"; kind: "darkDanger"; tip: "停止全部活动工具"; onClicked: shell.stopAllRequested() }
                     }

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import logging
+import math
+import errno
 import os
 import re
 import secrets
@@ -11,9 +14,12 @@ import signal
 import socket
 import subprocess
 import time
+from threading import Event, Lock
+
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import Future, ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -22,8 +28,8 @@ from typing import Any, Iterator, Literal, TypedDict, cast
 
 from . import paths
 from .config import ToolConfig
-from .storage import atomic_write_text, exclusive_file_lock
-from .util import proc_alive, proc_group_alive, proc_starttime, strip_ansi
+from .storage import FileLockTimeout, atomic_write_text, exclusive_file_lock
+from .util import active_posix_groups, proc_alive, proc_group_alive, proc_starttime, strip_ansi
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -32,11 +38,19 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 class ProcessError(RuntimeError):
-    pass
+    """A lifecycle action failed without changing ownership guarantees."""
+
+
+class StateFileError(ProcessError):
+    """Persisted process state cannot safely be interpreted."""
+
+
+class ProcessLockTimeout(ProcessError):
+    """Another process held the tool lock beyond the bounded wait."""
 
 
 ProcessLifecycle = Literal["running", "stopping", "stopped", "exited"]
-ToolLifecycle = Literal["starting", "running", "unready", "stopping", "stopped", "exited"]
+ToolLifecycle = Literal["starting", "running", "unready", "stopping", "stopped", "exited", "error"]
 
 
 class ProcessState(TypedDict, total=False):
@@ -93,9 +107,37 @@ class ProcManager:
     _LOCAL_URL = re.compile(r"https?://[^\s\"'<>]+", re.IGNORECASE)
 
     def __init__(self, *, max_log_bytes: int = 50 * 1024 * 1024) -> None:
+        self._closing = Event()
+        self._probe_lock = Lock()
+        self._probe_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lattice-readiness")
+        self._probes: dict[str, Future[None]] = {}
         self.max_log_bytes = max_log_bytes
         self._children: dict[str, tuple[subprocess.Popen[bytes], str]] = {}
+        self._group_snapshot: set[int] | None = None
+        self._snapshot_enabled = False
         paths.ensure_dirs()
+
+    def close(self) -> None:
+        with self._probe_lock:
+            self._closing.set()
+            self._probe_pool.shutdown(wait=False, cancel_futures=True)
+
+    @contextmanager
+    def snapshot_groups(self) -> Iterator[None]:
+        self._snapshot_enabled = os.name != "nt"
+        self._group_snapshot = None
+        try:
+            yield
+        finally:
+            self._snapshot_enabled = False
+            self._group_snapshot = None
+
+    def _group_alive(self, pgid: int) -> bool:
+        if self._snapshot_enabled:
+            if self._group_snapshot is None:
+                self._group_snapshot = active_posix_groups()
+            return pgid in self._group_snapshot
+        return proc_group_alive(pgid)
 
     @staticmethod
     def _timestamp() -> str:
@@ -103,17 +145,57 @@ class ProcManager:
 
     @contextmanager
     def _lock(self, tool_id: str) -> Iterator[None]:
-        with exclusive_file_lock(paths.run_dir() / f"{tool_id}.lock"):
-            yield
+        try:
+            with exclusive_file_lock(paths.run_dir() / f"{tool_id}.lock", 2.0, self._closing):
+                yield
+        except FileLockTimeout as exc:
+            raise ProcessLockTimeout(str(exc)) from exc
 
     @staticmethod
     def _read_state(tool_id: str) -> ProcessState | None:
         try:
             with paths.state_json(tool_id).open("r", encoding="utf-8") as handle:
                 state = json.load(handle)
-        except (FileNotFoundError, OSError, json.JSONDecodeError):
+        except FileNotFoundError:
             return None
-        return cast(ProcessState, state) if isinstance(state, dict) else None
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise StateFileError(f"无法读取状态文件 {paths.state_json(tool_id)}：{exc}") from exc
+        if not isinstance(state, dict):
+            raise StateFileError(f"状态文件 {tool_id} 的顶层必须是对象")
+        for key in ("pid", "pgid"):
+            value = state.get(key)
+            if type(value) is not int or value <= 1:
+                raise StateFileError(f"状态文件 {tool_id} 的 {key} 必须是大于 1 的整数")
+        if not isinstance(state.get("lifecycle"), str) or state["lifecycle"] not in {"running", "stopping", "stopped", "exited"}:
+            raise StateFileError(f"状态文件 {tool_id} 的 lifecycle 无效")
+        for key in ("started_at", "exited_at", "stop_deadline"):
+            value = state.get(key)
+            if (key == "started_at" or value is not None) and (
+                type(value) not in {int, float} or not math.isfinite(value)
+            ):
+                raise StateFileError(f"状态文件 {tool_id} 的 {key} 必须是有限数字")
+        for key in ("starttime", "exit_code", "leader_exit_code"):
+            if state.get(key) is not None and type(state[key]) is not int:
+                raise StateFileError(f"状态文件 {tool_id} 的 {key} 必须是整数或 null")
+        if "group_validated" in state and type(state["group_validated"]) is not bool:
+            raise StateFileError(f"状态文件 {tool_id} 的 group_validated 必须是布尔值")
+        for key in ("readiness_grace_at", "readiness_deadline", "ready_at", "next_probe_at"):
+            value = state.get(key)
+            if value is not None and (type(value) not in {int, float} or not math.isfinite(value)):
+                raise StateFileError(f"状态文件 {tool_id} 的 {key} 必须是有限数字")
+        for key, allowed in (("readiness_state", {"starting", "ready", "unready"}), ("readiness_mode", {"auto", "process", "http", "tcp"})):
+            if key in state and (not isinstance(state[key], str) or state[key] not in allowed):
+                raise StateFileError(f"状态文件 {tool_id} 的 {key} 无效")
+        for key in ("run_id", "readiness_url", "readiness_message", "message"):
+            if key in state and not isinstance(state[key], str):
+                raise StateFileError(f"状态文件 {tool_id} 的 {key} 必须是字符串")
+        if "readiness_state" in state and not state.get("run_id"):
+            raise StateFileError(f"状态文件 {tool_id} 的就绪状态缺少 run_id")
+        if "readiness_port" in state and (type(state["readiness_port"]) is not int or not 1 <= state["readiness_port"] <= 65535):
+            raise StateFileError(f"状态文件 {tool_id} 的 readiness_port 无效")
+        if "readiness_log_offset" in state and (type(state["readiness_log_offset"]) is not int or state["readiness_log_offset"] < 0):
+            raise StateFileError(f"状态文件 {tool_id} 的 readiness_log_offset 无效")
+        return cast(ProcessState, state)
 
     @staticmethod
     def _write_state(tool_id: str, state: ProcessState) -> None:
@@ -145,10 +227,11 @@ class ProcManager:
             paths.logs_dir().mkdir(parents=True, exist_ok=True)
             with paths.log_file(tool_id).open("ab") as handle:
                 handle.write(cls._marker(event, detail))
-        except OSError:
-            # Process state must remain usable even when an optional marker
-            # cannot be appended (for example, a full filesystem).
-            return
+        except OSError as exc:
+            logging.getLogger(__name__).error(
+                "process_log_marker_failed", extra={"tool_id": tool_id, "event": event, "error": str(exc)}
+            )
+            raise ProcessError(f"无法写入 {tool_id} 的 {event} 日志标记：{exc}") from exc
 
     def _rotate_log(self, tool_id: str) -> None:
         log_path = paths.log_file(tool_id)
@@ -258,6 +341,45 @@ class ProcManager:
         except OSError:
             return False
 
+    def _schedule_probe(self, tool_id: str, state: ProcessState, url: str, port: int | None) -> None:
+        with self._probe_lock:
+            if self._closing.is_set():
+                return
+            self._submit_probe(tool_id, state, url, port)
+
+    def _submit_probe(self, tool_id: str, state: ProcessState, url: str, port: int | None) -> None:
+        pending = self._probes.get(tool_id)
+        if pending is not None:
+            if not pending.done():
+                return
+            self._probes.pop(tool_id)
+            pending.result()
+        for completed_id, future in tuple(self._probes.items()):
+            if future.done():
+                future.result()
+                self._probes.pop(completed_id)
+        if len(self._probes) >= 4:
+            return
+        self._probes[tool_id] = self._probe_pool.submit(
+            self._probe_and_record, tool_id, state["run_id"], url, port,
+        )
+
+    def _probe_and_record(self, tool_id: str, run_id: str, url: str, port: int | None) -> None:
+        """Wait on the network outside the process lock; commit only to this run."""
+        ready = self._probe_http(url) if url else self._probe_tcp(port) if port is not None else False
+        if not ready or self._closing.is_set():
+            return
+        with self._lock(tool_id):
+            state = self._read_state(tool_id)
+            if state is None or state.get("run_id") != run_id or state.get("lifecycle") != "running":
+                return
+            if state.get("readiness_state") not in {"starting", "unready"}:
+                return
+            state.update(readiness_state="ready", ready_at=time.time(), readiness_message="已就绪")
+            state.pop("next_probe_at", None)
+            self._write_state(tool_id, state)
+            self._append_marker(tool_id, "READY", f"url={url}" if url else f"port={port}")
+
     def _update_readiness(self, tool_id: str, state: ProcessState) -> ProcessState:
         readiness = state.get("readiness_state")
         if readiness not in {"starting", "unready"}:
@@ -313,16 +435,16 @@ class ProcManager:
             ready = True
             detail = "mode=process"
         elif mode == "http" and url:
-            ready = self._probe_http(url)
+            self._schedule_probe(tool_id, state, url, None)
             detail = f"url={url}"
         elif mode == "tcp" and isinstance(port, int):
-            ready = self._probe_tcp(port)
+            self._schedule_probe(tool_id, state, "", port)
             detail = f"port={port}"
         elif mode == "auto" and url:
-            ready = self._probe_http(url)
+            self._schedule_probe(tool_id, state, url, None)
             detail = f"url={url}"
         elif mode == "auto" and isinstance(port, int):
-            ready = self._probe_tcp(port)
+            self._schedule_probe(tool_id, state, "", port)
             detail = f"port={port}"
         if ready:
             state.update(readiness_state="ready", ready_at=now, readiness_message="已就绪")
@@ -338,7 +460,7 @@ class ProcManager:
             state.update(readiness_state="unready", readiness_message=message, next_probe_at=now + 5.0)
             if changed:
                 self._append_marker(tool_id, "READINESS-TIMEOUT")
-                self._write_state(tool_id, state)
+            self._write_state(tool_id, state)
         else:
             until_deadline = float(deadline) - now if isinstance(deadline, (int, float)) else 0.75
             state["next_probe_at"] = now + min(0.75, max(0.05, until_deadline))
@@ -390,19 +512,22 @@ class ProcManager:
         command = ["taskkill", "/PID", str(pid), "/T"]
         if force:
             command.append("/F")
-        completed = subprocess.run(
-            command,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        try:
+            completed = subprocess.run(
+                command, stdin=subprocess.DEVNULL, capture_output=True,
+                timeout=3.0, check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ProcessError(f"Windows taskkill PID {pid} 失败（3 秒超时）：{exc}") from exc
         if completed.returncode == 0 or not proc_group_alive(pid):
             return True
         if force:
             action = "强制停止" if force else "停止"
-            raise ProcessError(f"Windows 无法{action} PID {pid} 的进程树")
+            raise ProcessError(
+                f"Windows 无法{action} PID {pid} 的进程树；退出码 {completed.returncode}；"
+                f"输出 {completed.stdout!r}；错误 {completed.stderr!r}"
+            )
         return False
 
     def _finish_child(self, tool_id: str, state: ProcessState) -> ProcessState:
@@ -510,7 +635,7 @@ class ProcManager:
             group_validated = True
             self._write_state(tool_id, state)
         group_alive = (
-            proc_group_alive(pgid)
+            self._group_alive(pgid)
             if (
                 lifecycle in {"running", "stopping"}
                 and not leader_alive
@@ -537,7 +662,7 @@ class ProcManager:
                     current = "running"
                 return ToolStatus(tool_id, current, pid=pid, started_at=started_at)
             lifecycle = state.get("lifecycle", lifecycle)
-            group_alive = proc_group_alive(pgid) if group_validated and isinstance(pgid, int) else False
+            group_alive = self._group_alive(pgid) if group_validated and isinstance(pgid, int) else False
 
         if lifecycle in {"running", "stopping"} and (leader_alive or group_alive):
             if lifecycle == "stopping":
@@ -545,6 +670,7 @@ class ProcManager:
             else:
                 if state.get("readiness_state") not in {"starting", "ready", "unready"}:
                     state.update(
+                        run_id=state.get("run_id") or secrets.token_hex(16),
                         readiness_state="ready",
                         readiness_mode="process",
                         ready_at=time.time(),
@@ -554,7 +680,7 @@ class ProcManager:
                 state = self._update_readiness(tool_id, state)
                 readiness_state = state.get("readiness_state")
                 current = "starting" if readiness_state == "starting" else "unready" if readiness_state == "unready" else "running"
-            message = state.get("readiness_message") or state.get("message")
+            message = state.get("message") or state.get("readiness_message")
             return ToolStatus(
                 tool_id,
                 current,
@@ -594,11 +720,10 @@ class ProcManager:
 
     def start(self, tool: ToolConfig) -> ToolStatus:
         with self._lock(tool.id):
-            state_path = paths.state_json(tool.id)
-            if state_path.exists() and not self._state_has_identity(self._read_state(tool.id)):
-                raise ProcessError(
-                    f"{tool.name} 的运行状态文件损坏，已拒绝重复启动：{state_path}"
-                )
+            try:
+                self._read_state(tool.id)
+            except StateFileError as exc:
+                raise StateFileError(f"{tool.name} 的运行状态文件损坏，已拒绝重复启动：{exc}") from exc
             try:
                 current = self._status_unlocked(tool.id)
             except OSError as exc:
@@ -657,7 +782,7 @@ class ProcManager:
                 raise ProcessError(f"启动失败：{exc}") from exc
             started_at = time.time()
             starttime = proc_starttime(child.pid)
-            group_validated = self._posix_group_matches(child.pid, child.pid, starttime)
+            group_validated = os.name == "nt" or self._posix_group_matches(child.pid, child.pid, starttime)
             run_id = secrets.token_hex(16)
             state: ProcessState = {
                 "pid": child.pid,
@@ -686,7 +811,7 @@ class ProcManager:
                 self._children.pop(tool.id, None)
                 detail = f"state={exc} rollback={'failed: ' + rollback_error if rollback_error else 'complete'}"
                 self._append_marker(tool.id, "START-ROLLBACK", detail)
-                message = f"启动状态无法保存，已回滚新进程：{exc}"
+                message = f"启动状态无法保存，已清理并回滚新进程：{exc}"
                 if rollback_error:
                     message += f"；进程树回滚异常：{rollback_error}"
                 raise ProcessError(message) from exc
@@ -751,38 +876,48 @@ class ProcManager:
 
     def tick(self) -> None:
         paths.ensure_dirs()
+        errors: list[str] = []
         for state_path in paths.run_dir().glob("*.json"):
-            tool_id = state_path.stem
-            with self._lock(tool_id):
-                state = self._read_state(tool_id)
-                if not state:
-                    continue
-                current = self._status_unlocked(tool_id)
-                if current.state != "stopping" or current.pid is None:
-                    continue
-                state = self._read_state(tool_id) or state
-                deadline = state.get("stop_deadline")
-                if not isinstance(deadline, (int, float)) or time.time() < deadline:
-                    continue
-                signal_target = current.pid if os.name == "nt" else state.get("pgid")
-                if not isinstance(signal_target, int) or signal_target <= 1:
-                    state["message"] = "进程组标识无效，无法强制停止"
-                    self._write_state(tool_id, state)
-                    continue
-                try:
-                    if os.name == "nt":
-                        self._taskkill_tree(signal_target, force=True)
-                        self._append_marker(tool_id, "KILL", "taskkill=/F timeout=expired")
-                    else:
-                        os.killpg(signal_target, signal.SIGKILL)
-                        self._append_marker(tool_id, "KILL", f"pgid={signal_target} signal=SIGKILL timeout=expired")
-                except ProcessLookupError:
-                    pass
-                except (PermissionError, ProcessError, OSError) as exc:
-                    state["message"] = f"无法强制停止 PID {signal_target}：{exc}"
-                state["stop_deadline"] = time.time() + 1.0
+            try:
+                self._tick_tool(state_path.stem)
+            except (ProcessError, OSError) as exc:
+                errors.append(str(exc))
+        if errors:
+            raise ProcessError("\n".join(errors))
+
+    def _tick_tool(self, tool_id: str) -> None:
+        with self._lock(tool_id):
+            state = self._read_state(tool_id)
+            if not state:
+                return
+            current = self._status_unlocked(tool_id)
+            if current.state != "stopping" or current.pid is None:
+                return
+            state = self._read_state(tool_id) or state
+            deadline = state.get("stop_deadline")
+            if not isinstance(deadline, (int, float)) or time.time() < deadline:
+                return
+            signal_target = current.pid if os.name == "nt" else state.get("pgid")
+            if not isinstance(signal_target, int) or signal_target <= 1:
+                state["message"] = "进程组标识无效，无法强制停止"
                 self._write_state(tool_id, state)
-                self._status_unlocked(tool_id)
+                return
+            try:
+                if os.name == "nt":
+                    self._taskkill_tree(signal_target, force=True)
+                    self._append_marker(tool_id, "KILL", "taskkill=/F timeout=expired")
+                else:
+                    os.killpg(signal_target, signal.SIGKILL)
+                    self._append_marker(tool_id, "KILL", f"pgid={signal_target} signal=SIGKILL timeout=expired")
+            except ProcessLookupError:
+                pass
+            except (PermissionError, ProcessError) as exc:
+                state["message"] = f"无法强制停止 PID {signal_target}：{exc}"
+                self._write_state(tool_id, state)
+                raise ProcessError(state["message"]) from exc
+            state["stop_deadline"] = time.time() + 1.0
+            self._write_state(tool_id, state)
+            self._status_unlocked(tool_id)
 
     def stop_blocking(self, tool: ToolConfig) -> ToolStatus:
         current = self.stop_begin(tool)

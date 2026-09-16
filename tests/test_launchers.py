@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import sys
 import threading
 import time
@@ -36,7 +37,7 @@ def test_python_detector_uses_nearby_environment_without_setup(tmp_path):
     source = tmp_path / "project" / "src" / "main.py"
     source.parent.mkdir(parents=True)
     source.write_text("print('ok')\n", encoding="utf-8")
-    interpreter = executable(tmp_path / "project" / ".venv" / "bin" / "python")
+    interpreter = executable(tmp_path / "project" / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
 
     analysis = analyze_launch(source, tooldeck_python=tmp_path / "tooldeck-python", detectors=None)
 
@@ -63,7 +64,7 @@ def test_python_detector_never_falls_back_to_tooldeck_python_and_declares_setup(
 
     assert analysis.plan is not None
     assert analysis.plan.setup is not None
-    assert analysis.plan.interpreter == str(root / ".venv" / "bin" / "python")
+    assert analysis.plan.interpreter == str(root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
     assert str(tooldeck_python) not in analysis.plan.argv
     assert analysis.plan.setup.commands[0].argv[0] == str(system_python)
     assert analysis.plan.setup.commands[1].network is True
@@ -162,7 +163,7 @@ def test_python_detector_resumes_tooldeck_environment_after_incomplete_setup(tmp
     marker = _setup_incomplete_marker(initial.plan.setup.environment_dir)
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text("incomplete\n", encoding="utf-8")
-    interpreter = executable(root / ".venv" / "bin" / "python")
+    interpreter = executable(root / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python"))
 
     resumed = analyze_launch(
         source,
@@ -223,7 +224,8 @@ def test_native_executable_permission_and_platform_rules(tmp_path):
     windows_exe.write_bytes(b"")
     windows = analyze_launch(windows_exe, platform_name="nt", detectors=[ExecutableDetector()])
 
-    assert denied.blocking
+    if os.name != "nt":
+        assert denied.blocking
     assert allowed.plan is not None and allowed.plan.argv == (str(native),)
     assert windows.plan is not None and windows.plan.argv == (str(windows_exe),)
 
@@ -438,8 +440,8 @@ def test_setup_requires_confirmation_and_writes_disk_log(tmp_path):
     assert denied.success is False
     assert not denied_log.exists()
     assert completed.success is True
-    assert expected.read_text() == "ok"
-    assert "setup complete" in completed.log_path.read_text()
+    assert expected.read_text(encoding="utf-8") == "ok"
+    assert "setup complete" in completed.log_path.read_text(encoding="utf-8")
 
 
 def test_setup_refuses_environment_that_appeared_after_detection(tmp_path):
@@ -450,7 +452,7 @@ def test_setup_refuses_environment_that_appeared_after_detection(tmp_path):
         (sys.executable, "-c", f"from pathlib import Path; Path({str(marker)!r}).write_text('bad')"),
         tmp_path,
     )
-    plan = SetupPlan("python", tmp_path, environment, (command,), (environment / "bin" / "python",), "setup")
+    plan = SetupPlan("python", tmp_path, environment, (command,), (environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python"),), "setup")
 
     result = execute_setup(plan, tmp_path / "existing.log", confirmed=True)
 
@@ -468,7 +470,7 @@ def test_setup_reports_dependency_command_failure(tmp_path):
         tmp_path,
         environment,
         (SetupCommand((sys.executable, "-c", "import sys; print('install failed'); sys.exit(9)"), tmp_path, True),),
-        (environment / "bin" / "python",),
+        (environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python"),),
         "dependency setup",
     )
 
@@ -476,7 +478,7 @@ def test_setup_reports_dependency_command_failure(tmp_path):
 
     assert result.success is False
     assert result.return_code == 9
-    assert "install failed" in result.log_path.read_text()
+    assert "install failed" in result.log_path.read_text(encoding="utf-8")
     assert marker.is_file()
 
 
@@ -489,7 +491,7 @@ def test_setup_running_command_can_be_cancelled(tmp_path):
         tmp_path,
         environment,
         (SetupCommand((sys.executable, "-c", "import time; time.sleep(60)"), tmp_path),),
-        (environment / "bin" / "python",),
+        (environment / ("Scripts/python.exe" if os.name == "nt" else "bin/python"),),
         "cancel running setup",
     )
 
@@ -506,7 +508,7 @@ def test_setup_running_command_can_be_cancelled(tmp_path):
 
 def test_setup_reports_log_path_when_execution_starts(tmp_path):
     environment = tmp_path / ".venv"
-    expected = environment / "ready"
+    expected = environment / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
     marker = _setup_incomplete_marker(environment)
     plan = SetupPlan(
         "python",
@@ -517,7 +519,7 @@ def test_setup_reports_log_path_when_execution_starts(tmp_path):
                 (
                     sys.executable,
                     "-c",
-                    f"from pathlib import Path; p=Path({str(expected)!r}); p.parent.mkdir(); p.write_text('ok')",
+                    f"import venv; venv.EnvBuilder(with_pip=False).create({str(environment)!r})",
                 ),
                 tmp_path,
             ),
@@ -540,8 +542,9 @@ def test_setup_does_not_inherit_parent_virtual_environment_targets(tmp_path, mon
     monkeypatch.setenv("VIRTUAL_ENV", "/wrong/venv")
     monkeypatch.setenv("UV_PROJECT_ENVIRONMENT", "/wrong/uv-environment")
     code = (
-        "import os; from pathlib import Path; "
-        f"p=Path({str(expected)!r}); p.parent.mkdir(); "
+        "import os, venv; from pathlib import Path; "
+        f"venv.EnvBuilder(with_pip=False).create({str(environment)!r}); "
+        f"p=Path({str(expected)!r}); "
         "p.write_text(os.environ.get('VIRTUAL_ENV', '') + '|' + os.environ.get('UV_PROJECT_ENVIRONMENT', ''))"
     )
     plan = SetupPlan(
@@ -556,7 +559,7 @@ def test_setup_does_not_inherit_parent_virtual_environment_targets(tmp_path, mon
     result = execute_setup(plan, tmp_path / "isolated.log", confirmed=True)
 
     assert result.success is True
-    assert expected.read_text() == "|"
+    assert expected.read_text(encoding="utf-8") == "|"
 
 
 def test_setup_honors_preexisting_cancellation_without_writing_config(tmp_path):

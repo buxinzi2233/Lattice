@@ -122,14 +122,13 @@ class ToolDeckApplication:
         if tick:
             self.runtime.tick()
         selected = dict(tools) if tools is not None else self.catalog.snapshot().tools
-        previous = previous_statuses or {}
         statuses: dict[str, ToolStatus] = {}
         issues: list[RuntimeIssue] = []
         for tool_id, tool in selected.items():
             try:
                 statuses[tool_id] = self.runtime.status(tool_id)
             except (ProcessError, OSError) as exc:
-                statuses[tool_id] = previous.get(tool_id) or ToolStatus(tool_id, "exited", message=str(exc))
+                statuses[tool_id] = ToolStatus(tool_id, "error", message=str(exc))
                 issues.append(RuntimeIssue(tool_id, tool.name, str(exc)))
         return StatusSnapshot(statuses, tuple(issues))
 

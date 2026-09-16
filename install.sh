@@ -3,7 +3,7 @@ set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PYTHON_BIN="${LATTICE_PYTHON:-${TOOLDECK_PYTHON:-}}"
-UV_VERSION="${LATTICE_UV_VERSION:-0.5.31}"
+UV_VERSION="${LATTICE_UV_VERSION:-0.12.10}"
 UV_BIN="$PROJECT_DIR/.local/uv"
 
 detect_qt_packages() {
